@@ -2,7 +2,7 @@ from clang import cindex
 from typing import Iterable
 import tempfile
 from apiparser import ApiModelParser
-from apimodel import ApiModel
+from model import ApiModel
 from directories import *
 from json import dump
 
@@ -89,6 +89,9 @@ def build_apispec():
 
     with open("api.json", "wt") as fh:
         dump(api_model.to_dict(), fh, indent="  ")
+
+    from generators.c import CGenerator
+    CGenerator(api_model).generate(Path("c_wrapper"))
 
 
 if __name__ == "__main__":

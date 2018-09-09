@@ -1,7 +1,7 @@
 from clang.cindex import TranslationUnit, Cursor, CursorKind, SourceLocation, Type, TypeKind, AccessSpecifier
-from apimodel import ApiModel, ApiClass, ApiConstructor, ApiParameterModel, ApiTypeRef, ApiEnumRef, ApiPrimitiveType, \
+from model import ApiModel, ApiClass, ApiConstructor, ApiParameterModel, ApiTypeRef, ApiEnumRef, ApiPrimitiveType, \
     PrimitiveTypeKind, ApiMethod, ApiClassRef, ApiPassByRef, ApiPassByRefType, ApiEnum, ApiEnumConstant
-from typing import Any, Optional, Set, Tuple
+from typing import Optional, Set
 from directories import *
 import settings
 
@@ -273,13 +273,18 @@ def _build_method_models(class_cursor: Cursor):
             continue
 
         # Skip assignment operators (for now)
-        if cursor.displayname == "operator=":
+        if cursor.spelling == "operator=":
             continue
 
         method_name = cursor.spelling
         params = _build_method_parameters_models(cursor)
         return_type = _build_type_model(cursor.result_type)
-        methods.append(ApiMethod(method_name, return_type, params))
+        method = ApiMethod(method_name, return_type, params)
+
+        if cursor.is_static_method():
+            static_methods.append(method)
+        else:
+            methods.append(method)
 
     return methods, static_methods
 
