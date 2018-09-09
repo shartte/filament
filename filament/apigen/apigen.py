@@ -1,11 +1,10 @@
-import os.path
 from clang import cindex
 from typing import Iterable
 import tempfile
 from apiparser import ApiModelParser
 from apimodel import ApiModel
 from directories import *
-from json import dumps
+from json import dump
 
 
 def get_defines() -> List[str]:
@@ -88,8 +87,8 @@ def build_apispec():
     finally:
         translation_unit.unlink()
 
-    for api_class in api_model.classes:
-        print(dumps(api_class.to_dict(), indent="  "))
+    with open("api.json", "wt") as fh:
+        dump(api_model.to_dict(), fh, indent="  ")
 
 
 if __name__ == "__main__":

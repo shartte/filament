@@ -1,6 +1,6 @@
 from clang.cindex import TranslationUnit, Cursor, CursorKind, SourceLocation, Type, TypeKind, AccessSpecifier
 from apimodel import ApiModel, ApiClass, ApiConstructor, ApiParameterModel, ApiTypeRef, ApiEnumRef, ApiPrimitiveType, \
-    PrimitiveTypeKind, ApiMethod, ApiClassRef, ApiPassByRef, ApiPassByRefType
+    PrimitiveTypeKind, ApiMethod, ApiClassRef, ApiPassByRef, ApiPassByRefType, ApiEnum, ApiEnumConstant
 from typing import Any, Optional, Set, Tuple
 from directories import *
 import settings
@@ -146,6 +146,7 @@ def _is_destructible(cursor: Cursor) -> bool:
 
 _primitive_type_map = {
     TypeKind.BOOL: PrimitiveTypeKind.BOOL,
+    TypeKind.SCHAR: PrimitiveTypeKind.INT8,
     TypeKind.CHAR_S: PrimitiveTypeKind.INT8,
     TypeKind.UCHAR: PrimitiveTypeKind.UINT8,
     TypeKind.SHORT: PrimitiveTypeKind.INT16,
@@ -209,8 +210,12 @@ def _build_type_model(type: Type) -> Optional[ApiTypeRef]:
             return ApiPrimitiveType(_special_value_types[record_name])
 
         return ApiClassRef(record_name)
+    elif type.kind == TypeKind.UNEXPOSED:
+        return ApiPrimitiveType(PrimitiveTypeKind.UNEXPOSED)
+
     else:
-        raise RuntimeError("Unsupported type: " + str(type.kind))
+        decl_cursor: Cursor = type.get_declaration()
+        raise RuntimeError("Unsupported type: " + str(type.kind) + " (" + decl_cursor.displayname + ")")
 
 
 def _build_method_parameters_models(method_cursor: Cursor) -> List[ApiParameterModel]:
@@ -273,12 +278,16 @@ def _build_method_models(class_cursor: Cursor):
 
         method_name = cursor.spelling
         params = _build_method_parameters_models(cursor)
-        methods.append(ApiMethod(method_name, params))
+        return_type = _build_type_model(cursor.result_type)
+        methods.append(ApiMethod(method_name, return_type, params))
 
     return methods, static_methods
 
 
 def _build_class_model(cursor: Cursor) -> Optional[ApiClass]:
+    """
+    Builds an ApiClass representation for a C++ class pointed at by a given cursor.
+    """
     class_name = cursor.displayname
     qualified_name = _get_qualified_name(cursor)
     if qualified_name not in settings.public_apis:
@@ -296,6 +305,39 @@ def _build_class_model(cursor: Cursor) -> Optional[ApiClass]:
         constructors,
         methods,
         static_methods
+    )
+
+
+def _build_enum_model(cursor: Cursor) -> Optional[ApiEnum]:
+    """
+    Builds an ApiEnum representation for a C++ class pointed at by a given cursor.
+    """
+
+    enum_name = cursor.displayname
+    qualified_name = _get_qualified_name(cursor)
+
+    # Get the declared base-type of the Enumeration (i.e. enum class X : int -> INT32)
+    enum_type = _build_type_model(cursor.enum_type)
+    if not isinstance(enum_type, ApiPrimitiveType):
+        raise RuntimeError(f"Expected base type of enum {qualified_name} to be primitive, but "
+                           f"got: {enum_type.to_dict()}")
+    base_type = enum_type.kind
+
+    # Get all declared constants
+    constants = []
+    for child in cursor.get_children():
+        if child.kind == CursorKind.ENUM_CONSTANT_DECL:
+            enum_value = child.enum_value
+            constants.append(ApiEnumConstant(
+                child.spelling,
+                enum_value
+            ))
+
+    return ApiEnum(
+        qualified_name,
+        enum_name,
+        base_type,
+        constants
     )
 
 
@@ -320,7 +362,7 @@ class ApiModelParser:
             if namespace == "std" or namespace == "filament::details":
                 return
 
-        if cursor.kind == CursorKind.CLASS_DECL:
+        elif cursor.kind == CursorKind.CLASS_DECL:
             # Fully ignore forward declarations
             if not cursor.is_definition():
                 return
@@ -328,6 +370,15 @@ class ApiModelParser:
             class_model = _build_class_model(cursor)
             if class_model is not None:
                 self._model.classes.append(class_model)
+
+        elif cursor.kind == CursorKind.ENUM_DECL:
+            # Fully ignore forward declarations
+            if not cursor.is_definition():
+                return
+
+            enum_model = _build_enum_model(cursor)
+            if enum_model is not None:
+                self._model.enums.append(enum_model)
 
         # Recurse further into this cursor
         for child in cursor.get_children():

@@ -17,6 +17,8 @@ class ApiTypeRef(metaclass=ABCMeta):
 
 
 class PrimitiveTypeKind(Enum):
+    UNEXPOSED = auto()
+
     BOOL = auto()
     UINT8 = auto()
     INT8 = auto()
@@ -135,13 +137,15 @@ class ApiConstructor:
 
 
 class ApiMethod:
-    def __init__(self, name: str, parameters: List[ApiParameterModel]):
+    def __init__(self, name: str, return_type: Optional[ApiTypeRef], parameters: List[ApiParameterModel]):
         self.name = name
         self.parameters = parameters
+        self.return_type = return_type
 
     def to_dict(self) -> dict:
         return {
             "name": self.name,
+            "return_type": self.return_type.to_dict() if self.return_type else None,
             "parameters": [x.to_dict() for x in self.parameters]
         }
 
@@ -180,6 +184,46 @@ class ApiClass:
         }
 
 
+class ApiEnumConstant:
+    def __init__(self, name: str, value: int):
+        self.name = name
+        self.value = value
+
+    def to_dict(self) -> dict:
+        return {
+            "name": self.name,
+            "value": self.value
+        }
+
+
+class ApiEnum:
+
+    def __init__(self,
+                 qualified_name: str,
+                 name: str,
+                 base_type: PrimitiveTypeKind,
+                 constants: List[ApiEnumConstant]):
+        self.qualified_name = qualified_name
+        self.name = name
+        self.base_type = base_type
+        self.constants = constants
+
+    def to_dict(self) -> dict:
+        return {
+            "qualified_name": self.qualified_name,
+            "name": self.name,
+            "base_type": self.base_type.name,
+            "constants": [x.to_dict() for x in self.constants]
+        }
+
+
 class ApiModel:
     def __init__(self):
         self.classes: List[ApiClass] = []
+        self.enums: List[ApiEnum] = []
+
+    def to_dict(self) -> dict:
+        return {
+            "classes": [x.to_dict() for x in self.classes],
+            "enums": [x.to_dict() for x in self.enums]
+        }
