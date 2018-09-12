@@ -1,7 +1,8 @@
 from clang.cindex import TranslationUnit, Cursor, CursorKind, SourceLocation, Type, TypeKind, AccessSpecifier
 from model import ApiModel, ApiClass, ApiConstructor, ApiParameterModel, ApiTypeRef, ApiEnumRef, ApiPrimitiveType, \
-    PrimitiveTypeKind, ApiMethod, ApiClassRef, ApiPassByRef, ApiPassByRefType, ApiEnum, ApiEnumConstant
-from typing import Optional, Set
+    PrimitiveTypeKind, ApiMethod, ApiClassRef, ApiPassByRef, ApiPassByRefType, ApiEnum, ApiEnumConstant, ApiValueType, \
+    ApiInterface, ApiAnonymousCallback, ApiCallbackRef, ApiCallback
+from typing import Optional, Set, Union
 from directories import *
 import settings
 
@@ -45,7 +46,8 @@ def _get_qualified_name(cursor: Cursor) -> str:
 
     display_name = cursor.displayname
     parent = cursor.semantic_parent
-    if parent and (parent.kind == CursorKind.NAMESPACE or parent.kind == CursorKind.CLASS_DECL):
+    if parent and (
+            parent.kind == CursorKind.NAMESPACE or parent.kind == CursorKind.CLASS_DECL or parent.kind == CursorKind.CLASS_TEMPLATE):
         display_name = _get_qualified_name(parent) + "::" + display_name
     return display_name
 
@@ -169,181 +171,9 @@ _special_value_types = {
     "math::details::TVec4<double>": PrimitiveTypeKind.VEC4_DOUBLE,
     "math::details::TVec4<float>": PrimitiveTypeKind.VEC4_FLOAT,
 
-    "utils::Entity": PrimitiveTypeKind.ENTITY,
+    # "utils::Entity": PrimitiveTypeKind.ENTITY,
     "utils::EntityInstance<filament::LightManager, false>": PrimitiveTypeKind.LIGHT_INSTANCE
 }
-
-
-def _build_type_model(type: Type) -> Optional[ApiTypeRef]:
-    if type.kind == TypeKind.VOID:
-        return None
-    elif type.kind == TypeKind.ENUM:
-        qualified_name = _get_qualified_name(type.get_declaration())
-        return ApiEnumRef(qualified_name)
-    elif type.kind == TypeKind.TYPEDEF:
-        canonical_type = type.get_canonical()
-        return _build_type_model(canonical_type)
-    elif type.kind in _primitive_type_map:
-        return ApiPrimitiveType(_primitive_type_map[type.kind])
-    elif type.kind == TypeKind.LVALUEREFERENCE:
-        const_ref = type.is_const_qualified()
-        pointee_type = type.get_pointee()
-        return ApiPassByRef(const_ref, ApiPassByRefType.LVALUE_REF, _build_type_model(pointee_type))
-    elif type.kind == TypeKind.RVALUEREFERENCE:
-        const_ref = type.is_const_qualified()
-        pointee_type = type.get_pointee()
-        return ApiPassByRef(const_ref, ApiPassByRefType.RVALUE_REF, _build_type_model(pointee_type))
-    elif type.kind == TypeKind.POINTER:
-        const_ref = type.is_const_qualified()
-        pointee_type = type.get_pointee()
-        return ApiPassByRef(const_ref, ApiPassByRefType.POINTER, _build_type_model(pointee_type))
-    elif type.kind == TypeKind.ELABORATED:
-        # Elaborated types just seem to be a namespace qualified ref
-        named_type = type.get_named_type()
-        return _build_type_model(named_type)
-    elif type.kind == TypeKind.RECORD:
-        record_decl = type.get_declaration()
-        record_name = _get_qualified_name(record_decl)
-
-        # Handle special value types
-        if record_name in _special_value_types:
-            return ApiPrimitiveType(_special_value_types[record_name])
-
-        return ApiClassRef(record_name)
-    elif type.kind == TypeKind.UNEXPOSED:
-        return ApiPrimitiveType(PrimitiveTypeKind.UNEXPOSED)
-
-    else:
-        decl_cursor: Cursor = type.get_declaration()
-        raise RuntimeError("Unsupported type: " + str(type.kind) + " (" + decl_cursor.displayname + ")")
-
-
-def _build_method_parameters_models(method_cursor: Cursor) -> List[ApiParameterModel]:
-    """
-    For a cursor pointing to a method or constructor, this function will retrieve all parameters
-    and return API models for them.
-    """
-
-    params = []
-
-    for cursor in method_cursor.get_children():
-        if cursor.kind == CursorKind.PARM_DECL:
-            param_name = cursor.displayname
-            param_type = _build_type_model(cursor.type)
-            params.append(ApiParameterModel(param_name, param_type))
-
-    return params
-
-
-def _build_constructor_models(class_cursor: Cursor) -> List[ApiConstructor]:
-    """
-    Convert from a cursor that points to a class declaration to API models describing the publicly visible constructors,
-    including an implied default constructor (if applicable).
-    """
-    public_constructors = _get_public_constructors(class_cursor)
-
-    if public_constructors is None:
-        return []  # No public constructors available
-
-    if len(public_constructors) == 0:
-        # Add a synthetic public default constructor
-        return [ApiConstructor([])]
-
-    result = []
-    for cursor_constructor in public_constructors:
-        params = _build_method_parameters_models(cursor_constructor)
-        result.append(ApiConstructor(params))
-    return result
-
-
-def _build_method_models(class_cursor: Cursor):
-    """
-    Creates the API models for instance and static methods found in the class pointed to by the given cursor.
-    Returns a tuple (methods, static_methods).
-    """
-    methods = []
-    static_methods = []
-
-    for cursor in class_cursor.get_children():
-        if cursor.kind != CursorKind.CXX_METHOD:
-            continue
-
-        # Skip anything not publicly visible
-        if cursor.access_specifier != AccessSpecifier.PUBLIC:
-            continue
-
-        # Skip assignment operators (for now)
-        if cursor.spelling == "operator=":
-            continue
-
-        method_name = cursor.spelling
-        params = _build_method_parameters_models(cursor)
-        return_type = _build_type_model(cursor.result_type)
-        method = ApiMethod(method_name, return_type, params)
-
-        if cursor.is_static_method():
-            static_methods.append(method)
-        else:
-            methods.append(method)
-
-    return methods, static_methods
-
-
-def _build_class_model(cursor: Cursor) -> Optional[ApiClass]:
-    """
-    Builds an ApiClass representation for a C++ class pointed at by a given cursor.
-    """
-    class_name = cursor.displayname
-    qualified_name = _get_qualified_name(cursor)
-    if qualified_name not in settings.public_apis:
-        return None
-
-    destructible = _is_destructible(cursor)
-
-    constructors = _build_constructor_models(cursor)
-    (methods, static_methods) = _build_method_models(cursor)
-
-    return ApiClass(
-        qualified_name,
-        class_name,
-        destructible,
-        constructors,
-        methods,
-        static_methods
-    )
-
-
-def _build_enum_model(cursor: Cursor) -> Optional[ApiEnum]:
-    """
-    Builds an ApiEnum representation for a C++ class pointed at by a given cursor.
-    """
-
-    enum_name = cursor.displayname
-    qualified_name = _get_qualified_name(cursor)
-
-    # Get the declared base-type of the Enumeration (i.e. enum class X : int -> INT32)
-    enum_type = _build_type_model(cursor.enum_type)
-    if not isinstance(enum_type, ApiPrimitiveType):
-        raise RuntimeError(f"Expected base type of enum {qualified_name} to be primitive, but "
-                           f"got: {enum_type.to_dict()}")
-    base_type = enum_type.kind
-
-    # Get all declared constants
-    constants = []
-    for child in cursor.get_children():
-        if child.kind == CursorKind.ENUM_CONSTANT_DECL:
-            enum_value = child.enum_value
-            constants.append(ApiEnumConstant(
-                child.spelling,
-                enum_value
-            ))
-
-    return ApiEnum(
-        qualified_name,
-        enum_name,
-        base_type,
-        constants
-    )
 
 
 class ApiModelParser:
@@ -351,6 +181,255 @@ class ApiModelParser:
     def __init__(self, translation_unit: TranslationUnit):
         self.translation_unit = translation_unit
         self._model: ApiModel = None
+
+    def _build_callback_type(self, typedef_name: Optional[str], type: Type) -> Union[ApiCallbackRef,
+                                                                                     ApiAnonymousCallback]:
+        """
+        Given a function declaration type and an optional typedef name for it, return a callback type that
+        describes it.
+        """
+        params = [self._build_type_model(t) for t in type.argument_types()]
+        return_type = self._build_type_model(type.get_result())
+        if typedef_name is None:
+            return ApiAnonymousCallback(return_type, params, type.spelling)
+
+        found_callback = False
+        for callback in self._model.callbacks:
+            if callback.qualified_name == typedef_name:
+                found_callback = True
+                break
+
+        # Save the callback type if it didn't already exist
+        if not found_callback:
+            # TODO: params is wrong, we need the parameter names
+            self._model.callbacks.append(ApiCallback(
+                typedef_name, return_type, params
+            ))
+
+        # Treat it as a reference
+        return ApiCallbackRef(typedef_name)
+
+    def _build_type_model(self, type: Type, parent_typedef: Optional[str] = None) -> Optional[ApiTypeRef]:
+        if type.kind == TypeKind.VOID:
+            return None
+        elif type.kind == TypeKind.ENUM:
+            qualified_name = _get_qualified_name(type.get_declaration())
+            return ApiEnumRef(qualified_name)
+        elif type.kind == TypeKind.TYPEDEF:
+            canonical_type = type.get_canonical()
+            if not parent_typedef:
+                parent_typedef = _get_qualified_name(type.get_declaration())
+            return self._build_type_model(canonical_type, parent_typedef=parent_typedef)
+        elif type.kind in _primitive_type_map:
+            return ApiPrimitiveType(_primitive_type_map[type.kind])
+        elif type.kind == TypeKind.LVALUEREFERENCE:
+            const_ref = type.is_const_qualified()
+            pointee_type = type.get_pointee()
+            return ApiPassByRef(const_ref, ApiPassByRefType.LVALUE_REF, self._build_type_model(pointee_type))
+        elif type.kind == TypeKind.RVALUEREFERENCE:
+            const_ref = type.is_const_qualified()
+            pointee_type = type.get_pointee()
+            return ApiPassByRef(const_ref, ApiPassByRefType.RVALUE_REF, self._build_type_model(pointee_type))
+        elif type.kind == TypeKind.POINTER:
+            const_ref = type.is_const_qualified()
+            pointee_type = type.get_pointee()
+
+            # Special case handling for function prototypes
+            if pointee_type.kind == TypeKind.FUNCTIONPROTO:
+                return self._build_callback_type(parent_typedef, pointee_type)
+
+            return ApiPassByRef(const_ref, ApiPassByRefType.POINTER, self._build_type_model(pointee_type))
+        elif type.kind == TypeKind.ELABORATED:
+            # Elaborated types just seem to be a namespace qualified ref
+            named_type = type.get_named_type()
+            return self._build_type_model(named_type)
+        elif type.kind == TypeKind.RECORD:
+            record_decl = type.get_declaration()
+            record_name = _get_qualified_name(record_decl)
+
+            # Handle special value types
+            if record_name in _special_value_types:
+                return ApiPrimitiveType(_special_value_types[record_name])
+            elif record_name in settings.hidden_apis:
+                return None  # Converts to a void*
+
+            return ApiClassRef(record_name)
+        elif type.kind == TypeKind.UNEXPOSED:
+            return ApiPrimitiveType(PrimitiveTypeKind.UNEXPOSED)
+
+        else:
+            decl_cursor: Cursor = type.get_declaration()
+            raise RuntimeError("Unsupported type: " + str(type.kind) + " (" + decl_cursor.displayname + ")")
+
+    def _build_method_parameters_models(self, method_cursor: Cursor) -> List[ApiParameterModel]:
+        """
+        For a cursor pointing to a method or constructor, this function will retrieve all parameters
+        and return API models for them.
+        """
+
+        params = []
+
+        for cursor in method_cursor.get_children():
+            if cursor.kind == CursorKind.PARM_DECL:
+                param_name = cursor.displayname
+                param_type = self._build_type_model(cursor.type)
+                params.append(ApiParameterModel(param_name, param_type))
+
+        return params
+
+    def _build_constructor_models(self, class_cursor: Cursor) -> List[ApiConstructor]:
+        """
+        Convert from a cursor that points to a class declaration to API models describing the publicly visible constructors,
+        including an implied default constructor (if applicable).
+        """
+        public_constructors = _get_public_constructors(class_cursor)
+
+        if public_constructors is None:
+            return []  # No public constructors available
+
+        if len(public_constructors) == 0:
+            # Add a synthetic public default constructor
+            return [ApiConstructor([])]
+
+        result = []
+        for cursor_constructor in public_constructors:
+            params = self._build_method_parameters_models(cursor_constructor)
+            result.append(ApiConstructor(params))
+        return result
+
+    def _build_method_models(self, class_cursor: Cursor):
+        """
+        Creates the API models for instance and static methods found in the class pointed to by the given cursor.
+        Returns a tuple (methods, static_methods).
+        """
+        methods = []
+        static_methods = []
+
+        for cursor in class_cursor.get_children():
+            if cursor.kind != CursorKind.CXX_METHOD:
+                continue
+
+            # Skip anything not publicly visible
+            if cursor.access_specifier != AccessSpecifier.PUBLIC:
+                continue
+
+            # Skip assignment operators (for now)
+            if cursor.spelling == "operator=":
+                continue
+
+            method_name = cursor.spelling
+            params = self._build_method_parameters_models(cursor)
+            return_type = self._build_type_model(cursor.result_type)
+            method = ApiMethod(method_name, return_type, params)
+
+            if cursor.is_static_method():
+                static_methods.append(method)
+            else:
+                methods.append(method)
+
+        return methods, static_methods
+
+    def _build_class_model(self, cursor: Cursor) -> Optional[ApiClass]:
+        """
+        Builds an ApiClass representation for a C++ class pointed at by a given cursor, if the
+        class is configured to be a public API in settings.py
+        """
+        class_name = cursor.displayname
+        qualified_name = _get_qualified_name(cursor)
+        if qualified_name not in settings.public_apis:
+            return None
+
+        destructible = _is_destructible(cursor)
+
+        constructors = self._build_constructor_models(cursor)
+        (methods, static_methods) = self._build_method_models(cursor)
+
+        return ApiClass(
+            qualified_name,
+            class_name,
+            destructible,
+            constructors,
+            methods,
+            static_methods
+        )
+
+    def _build_interface_model(self, cursor: Cursor) -> Optional[ApiInterface]:
+        """
+        Builds an ApiInterface representation for a C++ class pointed at by a given cursor, if the
+        class is configured to be an interface in settings.py
+        """
+        class_name = cursor.displayname
+        qualified_name = _get_qualified_name(cursor)
+        if qualified_name not in settings.interfaces:
+            return None
+
+        (methods, static_methods) = self._build_method_models(cursor)
+
+        return ApiInterface(
+            qualified_name,
+            class_name,
+            methods
+        )
+
+    def _build_value_type_model(self, cursor: Cursor) -> Optional[ApiValueType]:
+        """
+        Builds an ApiValueType representation for a C++ class or struct pointed at by a given cursor.
+        """
+        class_name = cursor.displayname
+        qualified_name = _get_qualified_name(cursor)
+        if qualified_name not in settings.value_types:
+            return None
+
+        if not _is_destructible(cursor):
+            raise RuntimeError(f"{qualified_name} was configured as a value type but is not destructible")
+
+        # Check if the struct/class has a parameter-less constructor
+        constructors = self._build_constructor_models(cursor)
+        found_constructor = False
+        for constructor in constructors:
+            if len(constructor.parameters) == 0:
+                found_constructor = True
+                break
+        if not found_constructor:
+            raise RuntimeError(f"{qualified_name} was configured as a value type but has no default constructor")
+
+        return ApiValueType(
+            qualified_name,
+            class_name,
+            []
+        )
+
+    def _build_enum_model(self, cursor: Cursor) -> Optional[ApiEnum]:
+        """
+        Builds an ApiEnum representation for a C++ class pointed at by a given cursor.
+        """
+
+        enum_name = cursor.displayname
+        qualified_name = _get_qualified_name(cursor)
+
+        # Get the declared base-type of the Enumeration (i.e. enum class X : int -> INT32)
+        enum_type = self._build_type_model(cursor.enum_type)
+        if not isinstance(enum_type, ApiPrimitiveType):
+            raise RuntimeError(f"Expected base type of enum {qualified_name} to be primitive, but "
+                               f"got: {enum_type.to_dict()}")
+        base_type = enum_type.kind
+
+        # Get all declared constants
+        constants = []
+        for child in cursor.get_children():
+            if child.kind == CursorKind.ENUM_CONSTANT_DECL:
+                enum_value = child.enum_value
+                constants.append(ApiEnumConstant(
+                    child.spelling,
+                    enum_value
+                ))
+
+        return ApiEnum(
+            qualified_name,
+            enum_name,
+            base_type,
+            constants
+        )
 
     def _visit_cursor(self, cursor: Cursor):
         """
@@ -367,27 +446,55 @@ class ApiModelParser:
             if namespace == "std" or namespace == "filament::details":
                 return
 
-        elif cursor.kind == CursorKind.CLASS_DECL:
+        elif cursor.kind == CursorKind.CLASS_DECL or cursor.kind == CursorKind.STRUCT_DECL:
             # Fully ignore forward declarations
             if not cursor.is_definition():
                 return
 
-            class_model = _build_class_model(cursor)
+            # Attempt building a class model
+            class_model = self._build_class_model(cursor)
             if class_model is not None:
                 self._model.classes.append(class_model)
+
+            # Attempt building an interface model
+            interface_model = self._build_interface_model(cursor)
+            if interface_model is not None:
+                self._model.interfaces.append(interface_model)
+
+            # Attempt building a value type model
+            value_type_model = self._build_value_type_model(cursor)
+            if value_type_model is not None:
+                self._model.value_types.append(value_type_model)
 
         elif cursor.kind == CursorKind.ENUM_DECL:
             # Fully ignore forward declarations
             if not cursor.is_definition():
                 return
 
-            enum_model = _build_enum_model(cursor)
+            enum_model = self._build_enum_model(cursor)
             if enum_model is not None:
                 self._model.enums.append(enum_model)
 
         # Recurse further into this cursor
         for child in cursor.get_children():
             self._visit_cursor(child)
+
+    def _get_enum_refs(self) -> Set[str]:
+        """
+        Gets a set of the fully qualified names of all enumerations referenced by methods,
+        static methods or constructors
+        :return:
+        """
+
+        result = set()
+        for api_class in self._model.classes:
+            for method in api_class.methods + api_class.static_methods + api_class.constructors:
+                for param in method.parameters:
+                    if isinstance(param.type, ApiEnumRef):
+                        result.add(param.type.qualified_name)
+                if isinstance(method, ApiMethod) and isinstance(method.return_type, ApiEnumRef):
+                    result.add(method.return_type.qualified_name)
+        return result
 
     def parse_api(self) -> ApiModel:
         """
@@ -399,5 +506,9 @@ class ApiModelParser:
 
         for child in self.translation_unit.cursor.get_children():
             self._visit_cursor(child)
+
+        # Remove any enumerations not used
+        enums = self._get_enum_refs()
+        self._model.enums = [x for x in self._model.enums if x.qualified_name in enums]
 
         return self._model

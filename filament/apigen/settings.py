@@ -1,8 +1,6 @@
 value_types = {
     "filament::Box",
     "filament::Frustum",
-    "filament::driver::BufferDescriptor",
-    "filament::driver::PixelBufferDescriptor",
     "utils::Entity"
 }
 
@@ -10,6 +8,14 @@ value_types = {
 # as such references to these objects are always borrowed and never owned
 borrowed_obj_superclass = "filament::FilamentAPI"
 builder_superclass = "filament::BuilderBase<T>"
+
+interfaces = {
+    "utils::EntityManager::Listener"
+}
+
+hidden_apis ={
+    "filament::driver::ExternalContext"
+}
 
 public_apis = {
     "utils::EntityManager",
@@ -43,5 +49,7 @@ public_apis = {
     "filament::Stream::Builder",
     "filament::TransformManager",
     "filament::Viewport",
-    "filament::View"
+    "filament::View",
+    "filament::driver::BufferDescriptor",
+    "filament::driver::PixelBufferDescriptor"
 }

@@ -1,4 +1,4 @@
-from typing import Optional
+from typing import Optional, List
 from abc import ABCMeta, abstractmethod
 from enum import Enum, auto
 
@@ -62,6 +62,39 @@ class ApiPrimitiveType(ApiTypeRef):
         return {
             "type": "primitive",
             "kind": self.kind.name
+        }
+
+
+class ApiCallbackRef(ApiTypeRef):
+
+    def __init__(self, qualified_name: str):
+        super().__init__()
+        self.qualified_name = qualified_name
+
+    def to_dict(self) -> dict:
+        return {
+            "type": "callback",
+            "qualified_name": self.qualified_name
+        }
+
+
+class ApiAnonymousCallback(ApiTypeRef):
+    """
+    Specifies a C function pointer that was not declared using a typedef and thus has no usable name.
+    """
+
+    def __init__(self, return_type: ApiTypeRef, parameters: List[ApiTypeRef], signature: str):
+        super().__init__()
+        self.return_type = return_type
+        self.parameters = parameters
+        self.signature = signature
+
+    def to_dict(self) -> dict:
+        return {
+            "type": "anonymous_callback",
+            "return_type": self.return_type.to_dict() if self.return_type else None,
+            "parameters": [p.to_dict() for p in self.parameters],
+            "signature": self.signature
         }
 
 
