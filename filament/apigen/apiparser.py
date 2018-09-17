@@ -1,13 +1,19 @@
+from clang import cindex
 from clang.cindex import TranslationUnit, Cursor, CursorKind, SourceLocation, Type, TypeKind, AccessSpecifier
 from model import ApiModel, ApiClass, ApiConstructor, ApiParameterModel, ApiTypeRef, ApiEnumRef, ApiPrimitiveType, \
     PrimitiveTypeKind, ApiMethod, ApiClassRef, ApiPassByRef, ApiPassByRefType, ApiEnum, ApiEnumConstant, ApiValueType, \
-    ApiInterface, ApiAnonymousCallback, ApiCallbackRef, ApiCallback
+    ApiInterface, ApiAnonymousCallback, ApiCallbackRef, ApiCallback, ApiBitsetType, ApiEntityInstance, ApiConstantArray
 from typing import Optional, Set, Union
 from directories import *
 import settings
+import re
 
 # Cache of paths that are considered public includes of the filament API
+from model.value_types import ApiValueTypeField
+
 _public_includes = set()
+
+ENTITY_INSTANCE_PATTERN = re.compile("""utils::EntityInstance<([^,>]+).*>""")
 
 
 def _is_in_public_header(cursor: Cursor) -> bool:
@@ -57,7 +63,9 @@ def _get_base_classes(cursor: Cursor, include_transitive: bool = True) -> Set[st
     Determine base classes for a C++ class pointed to by the given cursor.
     The cursor must be at the actual definition, not just a forward declaration.
     """
-    assert cursor.kind == CursorKind.CLASS_DECL or cursor.kind == CursorKind.CLASS_TEMPLATE
+    if cursor.kind != CursorKind.CLASS_DECL and cursor.kind != CursorKind.CLASS_TEMPLATE \
+            and cursor.kind != CursorKind.STRUCT_DECL:
+        raise RuntimeError(cursor.kind)
     assert cursor.is_definition()
 
     for child in cursor.get_children():
@@ -161,19 +169,12 @@ _primitive_type_map = {
     TypeKind.DOUBLE: PrimitiveTypeKind.DOUBLE
 }
 
-_special_value_types = {
-    "math::details::TMat44<double>": PrimitiveTypeKind.MAT44_DOUBLE,
-    "math::details::TMat44<float>": PrimitiveTypeKind.MAT44_FLOAT,
-    "math::details::TVec2<double>": PrimitiveTypeKind.VEC2_DOUBLE,
-    "math::details::TVec2<float>": PrimitiveTypeKind.VEC2_FLOAT,
-    "math::details::TVec3<double>": PrimitiveTypeKind.VEC3_DOUBLE,
-    "math::details::TVec3<float>": PrimitiveTypeKind.VEC3_FLOAT,
-    "math::details::TVec4<double>": PrimitiveTypeKind.VEC4_DOUBLE,
-    "math::details::TVec4<float>": PrimitiveTypeKind.VEC4_FLOAT,
 
-    # "utils::Entity": PrimitiveTypeKind.ENTITY,
-    "utils::EntityInstance<filament::LightManager, false>": PrimitiveTypeKind.LIGHT_INSTANCE
-}
+def _dump_cursor(cursor: Cursor, indent: str = ""):
+    print(indent + cursor.spelling + " (" + str(cursor.kind) + ")")
+    indent = "  " + indent
+    for c in cursor.get_children():
+        _dump_cursor(c, indent)
 
 
 class ApiModelParser:
@@ -182,16 +183,20 @@ class ApiModelParser:
         self.translation_unit = translation_unit
         self._model: ApiModel = None
 
-    def _build_callback_type(self, typedef_name: Optional[str], type: Type) -> Union[ApiCallbackRef,
-                                                                                     ApiAnonymousCallback]:
+    def _build_callback_type(self, type: Type) -> Union[ApiCallbackRef, ApiAnonymousCallback]:
         """
         Given a function declaration type and an optional typedef name for it, return a callback type that
         describes it.
         """
-        params = [self._build_type_model(t) for t in type.argument_types()]
-        return_type = self._build_type_model(type.get_result())
-        if typedef_name is None:
+        if type.kind == TypeKind.FUNCTIONPROTO:
+            params = [self._build_type_model(t) for t in type.argument_types()]
+            return_type = self._build_type_model(type.get_result())
             return ApiAnonymousCallback(return_type, params, type.spelling)
+
+        assert type.kind == TypeKind.TYPEDEF
+
+        type_decl: Cursor = type.get_declaration()
+        typedef_name = _get_qualified_name(type_decl)
 
         found_callback = False
         for callback in self._model.callbacks:
@@ -199,9 +204,11 @@ class ApiModelParser:
                 found_callback = True
                 break
 
+        return_type = self._build_type_model(type.get_canonical().get_pointee().get_result())
+        params = self._build_method_parameters_models(type_decl)
+
         # Save the callback type if it didn't already exist
         if not found_callback:
-            # TODO: params is wrong, we need the parameter names
             self._model.callbacks.append(ApiCallback(
                 typedef_name, return_type, params
             ))
@@ -209,17 +216,25 @@ class ApiModelParser:
         # Treat it as a reference
         return ApiCallbackRef(typedef_name)
 
-    def _build_type_model(self, type: Type, parent_typedef: Optional[str] = None) -> Optional[ApiTypeRef]:
+    def _build_type_model(self, type: Type, typedef_type: Optional[Type] = None) -> Optional[ApiTypeRef]:
         if type.kind == TypeKind.VOID:
             return None
         elif type.kind == TypeKind.ENUM:
             qualified_name = _get_qualified_name(type.get_declaration())
             return ApiEnumRef(qualified_name)
         elif type.kind == TypeKind.TYPEDEF:
-            canonical_type = type.get_canonical()
-            if not parent_typedef:
-                parent_typedef = _get_qualified_name(type.get_declaration())
-            return self._build_type_model(canonical_type, parent_typedef=parent_typedef)
+
+            # Handle cases where the typedef name infers a certain semantic to an underlying type (i.e. color types)
+            if type.spelling in settings.typedef_to_primitive_map:
+                return ApiPrimitiveType(PrimitiveTypeKind[settings.typedef_to_primitive_map[type.spelling]])
+
+            canonical_type: Type = type.get_canonical()
+
+            # Handle a type-def'd function declaration because only the original typedef location can be
+            # traced back to the declaration, and this is the only way to get the parameter names
+            if canonical_type.kind == TypeKind.POINTER and canonical_type.get_pointee().kind == TypeKind.FUNCTIONPROTO:
+                return self._build_callback_type(type)
+            return self._build_type_model(canonical_type, typedef_type=type)
         elif type.kind in _primitive_type_map:
             return ApiPrimitiveType(_primitive_type_map[type.kind])
         elif type.kind == TypeKind.LVALUEREFERENCE:
@@ -236,7 +251,7 @@ class ApiModelParser:
 
             # Special case handling for function prototypes
             if pointee_type.kind == TypeKind.FUNCTIONPROTO:
-                return self._build_callback_type(parent_typedef, pointee_type)
+                return self._build_callback_type(pointee_type)
 
             return ApiPassByRef(const_ref, ApiPassByRefType.POINTER, self._build_type_model(pointee_type))
         elif type.kind == TypeKind.ELABORATED:
@@ -244,22 +259,36 @@ class ApiModelParser:
             named_type = type.get_named_type()
             return self._build_type_model(named_type)
         elif type.kind == TypeKind.RECORD:
-            record_decl = type.get_declaration()
+            record_decl: Cursor = type.get_declaration()
             record_name = _get_qualified_name(record_decl)
 
             # Handle special value types
-            if record_name in _special_value_types:
-                return ApiPrimitiveType(_special_value_types[record_name])
+            if record_name in settings.record_to_primitive_map:
+                primitive_kind = PrimitiveTypeKind[settings.record_to_primitive_map[record_name]]
+                return ApiPrimitiveType(primitive_kind)
             elif record_name in settings.hidden_apis:
                 return None  # Converts to a void*
+
+            # Handling templates really doesn't work nicely with libclang right now
+            if record_name == "utils::bitset<unsigned int, 1, void>":
+                return ApiBitsetType(PrimitiveTypeKind.UINT32, 1)
+
+            m = ENTITY_INSTANCE_PATTERN.fullmatch(record_name)
+            if m:
+                qualified_name = m.group(1)
+                return ApiEntityInstance(qualified_name)
 
             return ApiClassRef(record_name)
         elif type.kind == TypeKind.UNEXPOSED:
             return ApiPrimitiveType(PrimitiveTypeKind.UNEXPOSED)
 
+        elif type.kind == TypeKind.CONSTANTARRAY:
+            element_type = self._build_type_model(type.get_array_element_type())
+            element_count = type.get_array_size()
+            return ApiConstantArray(element_type, element_count)
+
         else:
-            decl_cursor: Cursor = type.get_declaration()
-            raise RuntimeError("Unsupported type: " + str(type.kind) + " (" + decl_cursor.displayname + ")")
+            raise RuntimeError("Unsupported type: " + str(type.kind) + " (" + type.spelling + ")")
 
     def _build_method_parameters_models(self, method_cursor: Cursor) -> List[ApiParameterModel]:
         """
@@ -344,7 +373,24 @@ class ApiModelParser:
         constructors = self._build_constructor_models(cursor)
         (methods, static_methods) = self._build_method_models(cursor)
 
+        # Figure out the relative include path
+        rel_header_path = None
+        abs_header_path = Path(cursor.location.file.name)
+        for public_include_dir in get_public_include_paths():
+            try:
+                rel_header_path = str(abs_header_path.relative_to(public_include_dir))
+                break
+            except ValueError:
+                pass
+
+        if rel_header_path is None:
+            raise Exception("Unable to determine relative header path for: " + str(abs_header_path))
+
+        # Normalize to Linux style path separators
+        rel_header_path = rel_header_path.replace("\\", "/")
+
         return ApiClass(
+            rel_header_path,
             qualified_name,
             class_name,
             destructible,
@@ -393,10 +439,28 @@ class ApiModelParser:
         if not found_constructor:
             raise RuntimeError(f"{qualified_name} was configured as a value type but has no default constructor")
 
+        union_field = None
+
+        # Fields
+        fields = []
+        for child in cursor.get_children():
+            if child.kind == CursorKind.FIELD_DECL:
+                field_type = self._build_type_model(child.type)
+                fields.append(ApiValueTypeField(child.spelling, field_type))
+            elif child.kind == CursorKind.UNION_DECL:
+                # For now we are just going to take the first one
+                first_union_field = next(child.get_children())
+                union_field = first_union_field.spelling
+                for union_child in first_union_field.get_children():
+                    if union_child.kind == CursorKind.FIELD_DECL:
+                        field_type = self._build_type_model(union_child.type)
+                        fields.append(ApiValueTypeField(union_child.spelling, field_type))
+
         return ApiValueType(
             qualified_name,
             class_name,
-            []
+            fields,
+            union_field
         )
 
     def _build_enum_model(self, cursor: Cursor) -> Optional[ApiEnum]:
@@ -494,6 +558,10 @@ class ApiModelParser:
                         result.add(param.type.qualified_name)
                 if isinstance(method, ApiMethod) and isinstance(method.return_type, ApiEnumRef):
                     result.add(method.return_type.qualified_name)
+        for value_type in self._model.value_types:
+            for field in value_type.fields:
+                if isinstance(field.type, ApiEnumRef):
+                    result.add(field.type.qualified_name)
         return result
 
     def parse_api(self) -> ApiModel:

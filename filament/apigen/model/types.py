@@ -36,12 +36,17 @@ class PrimitiveTypeKind(Enum):
     # We specify entities as a primitive value type represented as int32
     ENTITY = auto()
 
-    # Various EntityInstances
-    LIGHT_INSTANCE = auto()
-    TRANSFORM_INSTANCE = auto()
+    # Structs that consist of sub-byte-size fields are a hassle on APIs
+    SAMPLER_PARAMS = auto() # filament::driver::SamplerParams
+
+    # Various color types
+    LINEAR_COLOR = auto()  # underlying type: VEC3_FLOAT
+    LINEAR_COLOR_A = auto()  # underlying type: VEC4_FLOAT
 
     # Special math types for which we leave it up to the client what to do
     # We just specify the memory layout
+    MAT33_DOUBLE = auto()  # math::details::TMat33<double>
+    MAT33_FLOAT = auto()  # math::details::TMat33<float>
     MAT44_DOUBLE = auto()  # math::details::TMat44<double>
     MAT44_FLOAT = auto()  # math::details::TMat44<float>
     VEC2_DOUBLE = auto()  # math::details::TVec2<double>
@@ -50,6 +55,8 @@ class PrimitiveTypeKind(Enum):
     VEC3_FLOAT = auto()  # math::details::TVec3<float>
     VEC4_DOUBLE = auto()  # math::details::TVec4<double>
     VEC4_FLOAT = auto()  # math::details::TVec4<float>
+
+    QUATERNION_FLOAT = auto()  # math::details::TQuaternion<float>
 
 
 class ApiPrimitiveType(ApiTypeRef):
@@ -75,6 +82,40 @@ class ApiCallbackRef(ApiTypeRef):
         return {
             "type": "callback",
             "qualified_name": self.qualified_name
+        }
+
+
+class ApiBitsetType(ApiTypeRef):
+    """
+    Represents the utils::bitset class template.
+    """
+
+    def __init__(self, element_type: PrimitiveTypeKind, element_count: int):
+        super().__init__()
+        self.element_type = element_type
+        self.element_count = element_count
+
+    def to_dict(self) -> dict:
+        return {
+            "type": "bitset",
+            "element_type": self.element_type.name,
+            "element_count": self.element_count
+        }
+
+
+class ApiEntityInstance(ApiTypeRef):
+    """
+    Models an EntityInstance and contains a reference to the actual owner of the instance.
+    """
+
+    def __init__(self, owner_qualified_name: str):
+        super().__init__()
+        self.owner_qualified_name = owner_qualified_name
+
+    def to_dict(self) -> dict:
+        return {
+            "type": "entity_instance",
+            "owner_qualified_name": self.owner_qualified_name
         }
 
 
@@ -121,6 +162,24 @@ class ApiClassRef(ApiTypeRef):
         return {
             "type": "class",
             "qualified_name": self.qualified_name
+        }
+
+
+class ApiConstantArray(ApiTypeRef):
+    """
+    A constant-sized array. Only used for fields or pointee.
+    """
+
+    def __init__(self, element_type: ApiTypeRef, element_count: int):
+        super().__init__()
+        self.element_type = element_type
+        self.element_count = element_count
+
+    def to_dict(self) -> dict:
+        return {
+            "type": "constant_array",
+            "element_type": self.element_type.to_dict(),
+            "element_count": self.element_count
         }
 
 

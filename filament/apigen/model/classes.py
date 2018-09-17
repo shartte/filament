@@ -40,6 +40,7 @@ class ApiMethod:
 
 class ApiClass:
     def __init__(self,
+                 header: str,
                  qualified_name: str,
                  name: str,
                  destructible: bool,
@@ -51,6 +52,7 @@ class ApiClass:
         :param qualified_name: The qualified name of the class (i.e. filament::Camera)
         :param name: The plain name of the class (i.e. Camera) without namespace and enclosing classes.
         """
+        self.header = header  # i.e. filament/camera.h
         self.qualified_name = qualified_name
         self.name = name
         self.constructors = constructors
@@ -63,6 +65,7 @@ class ApiClass:
 
     def to_dict(self) -> dict:
         return {
+            "header": self.header,
             "qualified_name": self.qualified_name,
             "name": self.name,
             "destructible": self.destructible,
