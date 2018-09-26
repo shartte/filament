@@ -238,16 +238,16 @@ class ApiModelParser:
         elif type.kind in _primitive_type_map:
             return ApiPrimitiveType(_primitive_type_map[type.kind])
         elif type.kind == TypeKind.LVALUEREFERENCE:
-            const_ref = type.is_const_qualified()
             pointee_type = type.get_pointee()
+            const_ref = pointee_type.is_const_qualified()
             return ApiPassByRef(const_ref, ApiPassByRefType.LVALUE_REF, self._build_type_model(pointee_type))
         elif type.kind == TypeKind.RVALUEREFERENCE:
             const_ref = type.is_const_qualified()
             pointee_type = type.get_pointee()
             return ApiPassByRef(const_ref, ApiPassByRefType.RVALUE_REF, self._build_type_model(pointee_type))
         elif type.kind == TypeKind.POINTER:
-            const_ref = type.is_const_qualified()
             pointee_type = type.get_pointee()
+            const_ref = pointee_type.is_const_qualified()
 
             # Special case handling for function prototypes
             if pointee_type.kind == TypeKind.FUNCTIONPROTO:

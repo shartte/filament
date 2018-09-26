@@ -55,6 +55,40 @@ _primitive_type_names = {
     PrimitiveTypeKind.QUATERNION_FLOAT: "FQUATERNION_FLOAT"
 }
 
+_primitive_type_names_filament = {
+    PrimitiveTypeKind.BOOL: "bool",
+    PrimitiveTypeKind.UINT8: "uint8_t",
+    PrimitiveTypeKind.INT8: "int8_t",
+    PrimitiveTypeKind.UINT16: "uint16_t",
+    PrimitiveTypeKind.INT16: "int16_t",
+    PrimitiveTypeKind.UINT32: "uint32_t",
+    PrimitiveTypeKind.INT32: "int32_t",
+    PrimitiveTypeKind.UINT64: "uint64_t",
+    PrimitiveTypeKind.INT64: "int64_t",
+    PrimitiveTypeKind.SIZE_T: "size_t",
+    PrimitiveTypeKind.FLOAT: "float",
+    PrimitiveTypeKind.DOUBLE: "double",
+
+    PrimitiveTypeKind.ENTITY: "uint32_t",
+
+    # Special math types for which we leave it up to the client what to do
+    # We just specify the memory layout
+    PrimitiveTypeKind.LINEAR_COLOR: "filament::LinearColor",
+    PrimitiveTypeKind.LINEAR_COLOR_A: "filament::LinearColorA",
+    PrimitiveTypeKind.MAT33_DOUBLE: "math::mat3",
+    PrimitiveTypeKind.MAT33_FLOAT: "math::mat3f",
+    PrimitiveTypeKind.MAT44_DOUBLE: "math::mat4",
+    PrimitiveTypeKind.MAT44_FLOAT: "math::mat4f",
+    PrimitiveTypeKind.VEC2_DOUBLE: "math::double2",
+    PrimitiveTypeKind.VEC2_FLOAT: "math::float2",
+    PrimitiveTypeKind.VEC3_DOUBLE: "math::double3",
+    PrimitiveTypeKind.VEC3_FLOAT: "math::float3",
+    PrimitiveTypeKind.VEC4_DOUBLE: "math::double4",
+    PrimitiveTypeKind.VEC4_FLOAT: "math::float4",
+
+    PrimitiveTypeKind.QUATERNION_FLOAT: "math::quatf"
+}
+
 
 def _needs_return_value_transform(return_type: ApiTypeRef) -> bool:
     if isinstance(return_type, ApiPrimitiveType):
@@ -194,6 +228,86 @@ class CGenerator:
 
             fh.writelines(method_impls)
 
+    _force_cast_primitive_kinds = {
+        PrimitiveTypeKind.MAT33_DOUBLE,
+        PrimitiveTypeKind.MAT33_FLOAT,
+        PrimitiveTypeKind.MAT44_DOUBLE,
+        PrimitiveTypeKind.MAT44_FLOAT,
+        PrimitiveTypeKind.VEC2_DOUBLE,
+        PrimitiveTypeKind.VEC2_FLOAT,
+        PrimitiveTypeKind.VEC3_DOUBLE,
+        PrimitiveTypeKind.VEC3_FLOAT,
+        PrimitiveTypeKind.VEC4_DOUBLE,
+        PrimitiveTypeKind.VEC4_FLOAT
+    }
+
+    def _convert_in(self, expression: str, type: ApiTypeRef) -> str:
+        # Return the expression converted from the API surface type
+        # to the filament API type
+
+        # Return the expression converted to the API surface type
+        # from the filament API type
+        # Convert ref->pointer
+        underlying_type = type
+        expression_is_const = False
+        expression_is_ptr = False
+        if isinstance(type, ApiPassByRef):
+            if type.ref_type == ApiPassByRefType.LVALUE_REF:
+                expression = "*" + expression
+            elif type.ref_type == ApiPassByRefType.POINTER:
+                expression_is_ptr = True
+            underlying_type = type.pointee
+            expression_is_const = type.const
+
+        # Convert if the underlying type is one of the math types
+        if isinstance(underlying_type, ApiEnumRef):
+            # Cast enums 1:1 because their constant values are the same
+            expression = "(" + self._get_type_repr(underlying_type, False) + ")" + expression
+        elif isinstance(underlying_type, ApiPrimitiveType):
+            if underlying_type.kind in CGenerator._force_cast_primitive_kinds:
+                # Don't lose the const qualifier when casting
+                constness = "const " if expression_is_const else ""
+                if expression_is_ptr:
+                    expression = "reinterpret_cast<" + constness \
+                                 + self._get_type_repr(underlying_type, False) + "*>(" \
+                                 + expression + ")"
+                else:
+                    expression = "*reinterpret_cast<" + constness \
+                                 + self._get_type_repr(underlying_type, False) + "*>(&" \
+                                 + expression + ")"
+
+        return expression
+
+    def _convert_out(self, expression: str, type: ApiTypeRef) -> str:
+        # Return the expression converted to the API surface type
+        # from the filament API type
+        # Convert ref->pointer
+        underlying_type = type
+        expression_is_pointer = False
+        expression_is_const = False
+        if isinstance(type, ApiPassByRef):
+            if type.ref_type == ApiPassByRefType.LVALUE_REF:
+                expression = "&" + expression
+            underlying_type = type.pointee
+            expression_is_pointer = True
+            expression_is_const = type.const
+
+        # Convert if the underlying type is one of the math types
+        if isinstance(underlying_type, ApiEnumRef):
+            # Cast enums 1:1 because their constant values are the same
+            expression = "(" + self._get_type_repr(underlying_type) + ")" + expression
+        elif isinstance(underlying_type, ApiPrimitiveType):
+            if underlying_type.kind in CGenerator._force_cast_primitive_kinds:
+                # Don't lose the const qualifier when casting
+                constness = "const " if expression_is_const else ""
+                if expression_is_pointer:
+                    expression = "reinterpret_cast<" + constness + self._get_type_repr(underlying_type, True) \
+                                 + "*>(" + expression + ")"
+                else:
+                    return expression # handled by the tail-return-pointer
+
+        return expression
+
     def _generate_methods(self) -> Tuple[List[str], List[str]]:
 
         decls = []
@@ -223,20 +337,19 @@ class CGenerator:
                 method_header, trailing_return_value = self._create_method_header(api_class, method, method_parameters)
                 decls += [method_header + ";\n"]
 
-                # Handle return from method impl
+                # Insert the actual call to the C++ method
+                args = ", ".join([self._convert_in(p.name, p.type) for p in method.parameters])
+                call_expression = f"_self->{method.name}({args})"
+
+                # Insert a return if the method return type is not void
                 return_type = method.return_type
-                return_stmt = ""
                 if return_type is not None:
                     if trailing_return_value:
-                        return_stmt += "*result = "
+                        return_type_ptr = ApiPassByRef(False, ApiPassByRefType.POINTER, return_type)
+                        return_stmt = "*" + self._convert_in("result", return_type_ptr) + " = "
                     else:
-                        return_stmt += "return "
-                    # Cast return types if necessary
-                    return_stmt += "(" + self._get_type_repr(return_type) + ")"
-                    # Convert ref->pointer
-                    if isinstance(return_type, ApiPassByRef):
-                        if return_type.ref_type == ApiPassByRefType.LVALUE_REF:
-                            return_stmt += "&"
+                        return_stmt = "return "
+                    call_expression = return_stmt + self._convert_out(call_expression, return_type)
 
                 impls += [
                     method_header, "\n",
@@ -244,12 +357,8 @@ class CGenerator:
                     # Cast the self-parameter to the C++ this pointer
                     f"    auto _self = ({api_class.qualified_name}*){this_param.name};\n"
                     "    ",
-                    # Insert a return if the method return type is not void
-                    return_stmt,
-                    # Insert the actual call to the C++ method
-                    f"_self->{method.name}(",
-                    ", ".join([self._get_param_forward(p) for p in method.parameters]),
-                    ");\n",
+                    call_expression,
+                    ";\n",
                     "}\n\n",
                 ]
 
@@ -273,40 +382,6 @@ class CGenerator:
         PrimitiveTypeKind.VEC4_DOUBLE: "math::double4",
         PrimitiveTypeKind.VEC4_FLOAT: "math::float4"
     }
-
-    def _get_param_forward(self, param: ApiParameterModel) -> str:
-
-        param_type = param.type
-
-        result = ""
-        convert_pointer_to_ref = False
-        pointer_in = False
-
-        # Consider special conversions for pointers->refs
-        if isinstance(param_type, ApiPassByRef):
-            pointer_in = True
-            if param_type.ref_type != ApiPassByRefType.POINTER:
-                convert_pointer_to_ref = True
-            param_type = param_type.pointee
-
-        # Cast enums 1:1 because we've generated code in such a way that they are compatible
-        if isinstance(param_type, ApiEnumRef):
-            result += f"({param_type.qualified_name})"
-        elif isinstance(param_type, ApiPrimitiveType):
-            prim_kind = param_type.kind
-            # Cast back to original C++ type directly
-            if prim_kind in CGenerator._math_types:
-                if pointer_in:
-                    result += f"({CGenerator._math_types[prim_kind]}*)"
-                else:
-                    result += f"({CGenerator._math_types[prim_kind]}&)"
-
-        result += param.name
-
-        if convert_pointer_to_ref:
-            result = "*(" + result + ")"
-
-        return result
 
     def generate(self, output_dir: Path):
         if not output_dir.is_dir():
@@ -336,7 +411,13 @@ class CGenerator:
 
         return result
 
-    def _get_type_repr(self, type_ref: Optional[ApiTypeRef]) -> str:
+    def _get_type_repr(self, type_ref: Optional[ApiTypeRef], api_surface: bool = True) -> str:
+        """
+        :param type_ref:
+        :param api_surface: Get the type used on the external C API surface or one used on the filament API.
+        :return:
+        """
+
         if type_ref is None:
             return "void"
 
@@ -345,29 +426,47 @@ class CGenerator:
             if type_ref.const:
                 result = "const "
             result += self._get_type_repr(type_ref.pointee)
-            result += "*"
+            if api_surface or type_ref.ref_type == ApiPassByRefType.POINTER:
+                result += "*"
+            else:
+                result += "&"
             return result
 
         elif isinstance(type_ref, ApiPrimitiveType):
             if type_ref.kind == PrimitiveTypeKind.UNEXPOSED:
                 return "void*"
 
-            return _primitive_type_names[type_ref.kind]
+            if api_surface:
+                return _primitive_type_names[type_ref.kind]
+            else:
+                return _primitive_type_names_filament[type_ref.kind]
 
         elif isinstance(type_ref, ApiClassRef) or isinstance(type_ref, ApiEnumRef):
-            return _mangle_name(type_ref.qualified_name)
+            if api_surface:
+                return _mangle_name(type_ref.qualified_name)
+            else:
+                return type_ref.qualified_name
 
         elif isinstance(type_ref, ApiCallbackRef):
-            return _mangle_name(type_ref.qualified_name)
+            if api_surface:
+                return _mangle_name(type_ref.qualified_name)
+            else:
+                return type_ref.qualified_name
 
         elif isinstance(type_ref, ApiBitsetType):
             if type_ref.element_type == PrimitiveTypeKind.UINT32 and type_ref.element_count == 1:
-                return "uint32_t"  # Use uint32_t in lieu of bitset directlies
+                if api_surface:
+                    return "uint32_t"  # Use uint32_t in lieu of bitset directlies
+                else:
+                    return "utils::bitset32"
             else:
                 raise RuntimeError("Currently no support for extended bitsets")
 
         elif isinstance(type_ref, ApiEntityInstance):
-            return self._get_entity_instance_type_name(type_ref.owner_qualified_name)
+            if api_surface:
+                return self._get_entity_instance_type_name(type_ref.owner_qualified_name)
+            else:
+                return "utils::EntityInstance<" + type_ref.owner_qualified_name + ">"
 
         return type_ref.to_dict().__repr__()
 
