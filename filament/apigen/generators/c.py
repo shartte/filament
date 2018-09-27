@@ -20,7 +20,6 @@ _trivial_primitives = {
 }
 
 _primitive_type_names = {
-    PrimitiveTypeKind.ENTITY: "FENTITY",
     PrimitiveTypeKind.BOOL: "FBOOL",
     PrimitiveTypeKind.UINT8: "uint8_t",
     PrimitiveTypeKind.INT8: "int8_t",
@@ -33,6 +32,8 @@ _primitive_type_names = {
     PrimitiveTypeKind.SIZE_T: "size_t",
     PrimitiveTypeKind.FLOAT: "float",
     PrimitiveTypeKind.DOUBLE: "double",
+
+    PrimitiveTypeKind.ENTITY: "FENTITY",
 
     PrimitiveTypeKind.SAMPLER_PARAMS: "FSAMPLER_PARAMS",
 
@@ -70,6 +71,8 @@ _primitive_type_names_filament = {
     PrimitiveTypeKind.FLOAT: "float",
     PrimitiveTypeKind.DOUBLE: "double",
 
+    PrimitiveTypeKind.ENTITY: "utils::Entity",
+
     # Special math types for which we leave it up to the client what to do
     # We just specify the memory layout
     PrimitiveTypeKind.LINEAR_COLOR: "filament::LinearColor",
@@ -90,7 +93,14 @@ _primitive_type_names_filament = {
     PrimitiveTypeKind.FRUSTUM: "filament::Frustum"
 }
 
+#
+# The fake primitives in this list are in reality value types that are:
+# - trivially copyable
+# - have the same memory layout on both the wrapper API and filament API definitions
+#
 _force_cast_primitive_kinds = {
+    PrimitiveTypeKind.FRUSTUM,
+    PrimitiveTypeKind.ENTITY,
     PrimitiveTypeKind.MAT33_DOUBLE,
     PrimitiveTypeKind.MAT33_FLOAT,
     PrimitiveTypeKind.MAT44_DOUBLE,
@@ -100,7 +110,8 @@ _force_cast_primitive_kinds = {
     PrimitiveTypeKind.VEC3_DOUBLE,
     PrimitiveTypeKind.VEC3_FLOAT,
     PrimitiveTypeKind.VEC4_DOUBLE,
-    PrimitiveTypeKind.VEC4_FLOAT
+    PrimitiveTypeKind.VEC4_FLOAT,
+    PrimitiveTypeKind.QUATERNION_FLOAT
 }
 
 
@@ -260,16 +271,7 @@ class CGenerator:
             expression = "(" + self._get_type_repr(underlying_type, False) + ")" + expression
         elif isinstance(underlying_type, ApiPrimitiveType):
             if underlying_type.kind in _force_cast_primitive_kinds:
-                # Don't lose the const qualifier when casting
-                constness = "const " if expression_is_const else ""
-                if expression_is_ptr:
-                    expression = "reinterpret_cast<" + constness \
-                                 + self._get_type_repr(underlying_type, False) + "*>(" \
-                                 + expression + ")"
-                else:
-                    expression = "*reinterpret_cast<" + constness \
-                                 + self._get_type_repr(underlying_type, False) + "*>(&" \
-                                 + expression + ")"
+                return "convertIn(" + expression + ")"
 
         return expression
 
@@ -330,8 +332,7 @@ class CGenerator:
                 return_type = method.return_type
                 if return_type is not None:
                     if trailing_return_value:
-                        return_type_ptr = ApiPassByRef(False, ApiPassByRefType.POINTER, return_type)
-                        return_stmt = "*" + self._convert_in("result", return_type_ptr) + " = "
+                        return_stmt = "*result = "
                     else:
                         return_stmt = "return "
                     call_expression = return_stmt + self._convert_out(call_expression, return_type)
@@ -378,6 +379,16 @@ inline {wrapper_name} convertOut({filament_name} input) {{
     memcpy(&r, &input, sizeof(input));
     return r;
 }}
+
+// Directly cast const pointers
+inline const {wrapper_name}* convertOut(const {filament_name}* input) {{
+    return reinterpret_cast<const {wrapper_name}*>(input);
+}}
+
+// Directly cast non-const pointers when write-only arguments are passed
+inline {filament_name}* convertIn({wrapper_name}* input) {{
+    return reinterpret_cast<{filament_name}*>(input);
+}}
 """)
 
         for value_type in self.model.value_types:
@@ -389,8 +400,15 @@ inline {wrapper_name} convertOut({filament_name} input) {{
             impls.append(f"    {wrapper_name} result;\n")
 
             for field in value_type.fields:
-                expression = self._convert_out("input." + field.name, field.type)
-                impls.append(f"    result.{field.name} = {expression};\n")
+
+                # Arrays need to be considered
+                if isinstance(field.type, ApiConstantArray):
+                    for i in range(0, field.type.element_count):
+                        expression = self._convert_out(f"input.{field.name}[{i}]", field.type.element_type)
+                        impls.append(f"    result.{field.name}[{i}] = {expression};\n")
+                else:
+                    expression = self._convert_out("input." + field.name, field.type)
+                    impls.append(f"    result.{field.name} = {expression};\n")
 
             impls.append("    return result;\n")
             impls.append("}\n\n")
@@ -493,6 +511,9 @@ inline {wrapper_name} convertOut({filament_name} input) {{
                 return self._get_entity_instance_type_name(type_ref.owner_qualified_name)
             else:
                 return "utils::EntityInstance<" + type_ref.owner_qualified_name + ">"
+
+        elif isinstance(type_ref, ApiStringType):
+            return "const char*"
 
         return type_ref.to_dict().__repr__()
 

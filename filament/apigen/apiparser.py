@@ -3,7 +3,7 @@ from clang.cindex import TranslationUnit, Cursor, CursorKind, SourceLocation, Ty
 from model import ApiModel, ApiClass, ApiConstructor, ApiParameterModel, ApiTypeRef, ApiEnumRef, ApiPrimitiveType, \
     PrimitiveTypeKind, ApiMethod, ApiClassRef, ApiPassByRef, ApiPassByRefType, ApiEnum, ApiEnumConstant, ApiValueType, \
     ApiInterface, ApiAnonymousCallback, ApiCallbackRef, ApiCallback, ApiBitsetType, ApiEntityInstance, ApiConstantArray, \
-    ApiValueTypeRef
+    ApiValueTypeRef, ApiStringType
 from typing import Optional, Set, Union
 from directories import *
 import settings
@@ -177,6 +177,18 @@ def _dump_cursor(cursor: Cursor, indent: str = ""):
     for c in cursor.get_children():
         _dump_cursor(c, indent)
 
+# Declaration should be hidden from API spec document
+ATTR_HIDE_FROM_SPEC = "hide_from_spec"
+
+# Find all annotations of the form __attribute__((annotate("x")))
+def _find_annotations(cursor: Cursor) -> Set[str]:
+    if cursor.kind == CursorKind.ANNOTATE_ATTR:
+        return {cursor.spelling}
+    result = set()
+    for child in cursor.get_children():
+        result.update(_find_annotations(child))
+    return result
+
 
 class ApiModelParser:
 
@@ -253,6 +265,9 @@ class ApiModelParser:
             # Special case handling for function prototypes
             if pointee_type.kind == TypeKind.FUNCTIONPROTO:
                 return self._build_callback_type(pointee_type)
+            # Special case handling for pointer-to-char, which we consider strings
+            elif pointee_type.kind == TypeKind.CHAR_S and const_ref:
+                return ApiStringType()
 
             return ApiPassByRef(const_ref, ApiPassByRefType.POINTER, self._build_type_model(pointee_type))
         elif type.kind == TypeKind.ELABORATED:
@@ -347,6 +362,12 @@ class ApiModelParser:
 
             # Skip assignment operators (for now)
             if cursor.spelling == "operator=":
+                continue
+
+            # Skip methods annotated with no_spec
+            annotations = _find_annotations(cursor)
+            if ATTR_HIDE_FROM_SPEC in annotations:
+                print("Skipping hidden method " + cursor.spelling)
                 continue
 
             method_name = cursor.spelling

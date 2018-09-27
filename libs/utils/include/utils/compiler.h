@@ -109,6 +109,9 @@
 
 #define UTILS_RESTRICT __restrict__
 
+#define UTILS_ANNOTATE(tag) __attribute__((annotate(tag)))
+#define UTILS_HIDE_FROM_SPEC UTILS_ANNOTATE("hide_from_spec")
+
 // TODO: set the proper alignment for the target
 #ifndef __EMSCRIPTEN__
 #define UTILS_ALIGN_LOOP {__asm__ __volatile__(".align 4");}

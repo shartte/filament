@@ -43,10 +43,12 @@ public:
         Type type;
     };
 
+    UTILS_HIDE_FROM_SPEC
     std::pair<Property const*, size_t> getProperties() const noexcept;
 
     bool hasProperty(const char* name) const noexcept;
 
+    UTILS_HIDE_FROM_SPEC
     void* getPropertyAddress(const char* name) noexcept;
 
     bool setProperty(const char* name, bool v) noexcept;

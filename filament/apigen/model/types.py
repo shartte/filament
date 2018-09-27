@@ -61,6 +61,16 @@ class PrimitiveTypeKind(Enum):
     FRUSTUM = auto() # filament::Frustum
 
 
+class ApiStringType(ApiTypeRef):
+
+    def __init__(self):
+        super().__init__()
+
+    def to_dict(self) -> dict:
+        return {
+            "type": "string"
+        }
+
 class ApiPrimitiveType(ApiTypeRef):
 
     def __init__(self, kind: PrimitiveTypeKind):
