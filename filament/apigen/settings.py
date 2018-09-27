@@ -1,7 +1,8 @@
+
 value_types = {
     "filament::Box",
-    "filament::Frustum",
-    "utils::Entity",
+    # Frustum's fields are private and thus this won't work for it
+    # filament::Frustum
     "filament::LightManager::ShadowOptions",
     "filament::driver::FaceOffsets",
     "filament::Material::ParameterInfo",
@@ -12,6 +13,7 @@ value_types = {
 # We define certain value types as special "primitives" because we expect
 # clients to use special platform types in their place.
 record_to_primitive_map = {
+    "utils::Entity": "ENTITY",
     "filament::driver::SamplerParams": "SAMPLER_PARAMS",
     "math::details::TMat33<double>": "MAT33_DOUBLE",
     "math::details::TMat33<float>": "MAT33_FLOAT",
@@ -23,7 +25,8 @@ record_to_primitive_map = {
     "math::details::TVec3<float>": "VEC3_FLOAT",
     "math::details::TVec4<double>": "VEC4_DOUBLE",
     "math::details::TVec4<float>": "VEC4_FLOAT",
-    "math::details::TQuaternion<float>": "QUATERNION_FLOAT"
+    "math::details::TQuaternion<float>": "QUATERNION_FLOAT",
+    "filament::Frustum": "FRUSTUM"
 }
 
 # Sometimes a record type is given a special semantic via

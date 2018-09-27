@@ -37,7 +37,7 @@ class PrimitiveTypeKind(Enum):
     ENTITY = auto()
 
     # Structs that consist of sub-byte-size fields are a hassle on APIs
-    SAMPLER_PARAMS = auto() # filament::driver::SamplerParams
+    SAMPLER_PARAMS = auto()  # filament::driver::SamplerParams
 
     # Various color types
     LINEAR_COLOR = auto()  # underlying type: VEC3_FLOAT
@@ -57,6 +57,8 @@ class PrimitiveTypeKind(Enum):
     VEC4_FLOAT = auto()  # math::details::TVec4<float>
 
     QUATERNION_FLOAT = auto()  # math::details::TQuaternion<float>
+
+    FRUSTUM = auto() # filament::Frustum
 
 
 class ApiPrimitiveType(ApiTypeRef):
@@ -161,6 +163,19 @@ class ApiClassRef(ApiTypeRef):
     def to_dict(self) -> dict:
         return {
             "type": "class",
+            "qualified_name": self.qualified_name
+        }
+
+
+class ApiValueTypeRef(ApiTypeRef):
+
+    def __init__(self, qualified_name: str):
+        super().__init__()
+        self.qualified_name = qualified_name
+
+    def to_dict(self) -> dict:
+        return {
+            "type": "value_type",
             "qualified_name": self.qualified_name
         }
 

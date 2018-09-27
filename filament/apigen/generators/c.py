@@ -20,6 +20,7 @@ _trivial_primitives = {
 }
 
 _primitive_type_names = {
+    PrimitiveTypeKind.ENTITY: "FENTITY",
     PrimitiveTypeKind.BOOL: "FBOOL",
     PrimitiveTypeKind.UINT8: "uint8_t",
     PrimitiveTypeKind.INT8: "int8_t",
@@ -32,8 +33,6 @@ _primitive_type_names = {
     PrimitiveTypeKind.SIZE_T: "size_t",
     PrimitiveTypeKind.FLOAT: "float",
     PrimitiveTypeKind.DOUBLE: "double",
-
-    PrimitiveTypeKind.ENTITY: "uint32_t",
 
     PrimitiveTypeKind.SAMPLER_PARAMS: "FSAMPLER_PARAMS",
 
@@ -52,7 +51,9 @@ _primitive_type_names = {
     PrimitiveTypeKind.VEC4_DOUBLE: "FVEC4_DOUBLE",
     PrimitiveTypeKind.VEC4_FLOAT: "FVEC4_FLOAT",
 
-    PrimitiveTypeKind.QUATERNION_FLOAT: "FQUATERNION_FLOAT"
+    PrimitiveTypeKind.QUATERNION_FLOAT: "FQUATERNION_FLOAT",
+
+    PrimitiveTypeKind.FRUSTUM: "FFRUSTUM"
 }
 
 _primitive_type_names_filament = {
@@ -69,8 +70,6 @@ _primitive_type_names_filament = {
     PrimitiveTypeKind.FLOAT: "float",
     PrimitiveTypeKind.DOUBLE: "double",
 
-    PrimitiveTypeKind.ENTITY: "uint32_t",
-
     # Special math types for which we leave it up to the client what to do
     # We just specify the memory layout
     PrimitiveTypeKind.LINEAR_COLOR: "filament::LinearColor",
@@ -86,13 +85,30 @@ _primitive_type_names_filament = {
     PrimitiveTypeKind.VEC4_DOUBLE: "math::double4",
     PrimitiveTypeKind.VEC4_FLOAT: "math::float4",
 
-    PrimitiveTypeKind.QUATERNION_FLOAT: "math::quatf"
+    PrimitiveTypeKind.QUATERNION_FLOAT: "math::quatf",
+
+    PrimitiveTypeKind.FRUSTUM: "filament::Frustum"
+}
+
+_force_cast_primitive_kinds = {
+    PrimitiveTypeKind.MAT33_DOUBLE,
+    PrimitiveTypeKind.MAT33_FLOAT,
+    PrimitiveTypeKind.MAT44_DOUBLE,
+    PrimitiveTypeKind.MAT44_FLOAT,
+    PrimitiveTypeKind.VEC2_DOUBLE,
+    PrimitiveTypeKind.VEC2_FLOAT,
+    PrimitiveTypeKind.VEC3_DOUBLE,
+    PrimitiveTypeKind.VEC3_FLOAT,
+    PrimitiveTypeKind.VEC4_DOUBLE,
+    PrimitiveTypeKind.VEC4_FLOAT
 }
 
 
 def _needs_return_value_transform(return_type: ApiTypeRef) -> bool:
     if isinstance(return_type, ApiPrimitiveType):
         return return_type.kind not in _trivial_primitives
+    elif isinstance(return_type, ApiValueTypeRef):
+        return True
     return False  # Might still apply for R value references
 
 
@@ -220,27 +236,6 @@ class CGenerator:
 
             fh.write("#endif\n")
 
-    def _generate_impl(self, output_dir, method_impls: List[str]):
-        with output_dir.joinpath("cfilament.cpp").open("wt", buffering=4096) as fh:
-            fh.write("""extern "C" {\n""")
-            fh.write("#include \"cfilament.h\"\n")
-            fh.write("""};\n\n""")
-
-            fh.writelines(method_impls)
-
-    _force_cast_primitive_kinds = {
-        PrimitiveTypeKind.MAT33_DOUBLE,
-        PrimitiveTypeKind.MAT33_FLOAT,
-        PrimitiveTypeKind.MAT44_DOUBLE,
-        PrimitiveTypeKind.MAT44_FLOAT,
-        PrimitiveTypeKind.VEC2_DOUBLE,
-        PrimitiveTypeKind.VEC2_FLOAT,
-        PrimitiveTypeKind.VEC3_DOUBLE,
-        PrimitiveTypeKind.VEC3_FLOAT,
-        PrimitiveTypeKind.VEC4_DOUBLE,
-        PrimitiveTypeKind.VEC4_FLOAT
-    }
-
     def _convert_in(self, expression: str, type: ApiTypeRef) -> str:
         # Return the expression converted from the API surface type
         # to the filament API type
@@ -264,7 +259,7 @@ class CGenerator:
             # Cast enums 1:1 because their constant values are the same
             expression = "(" + self._get_type_repr(underlying_type, False) + ")" + expression
         elif isinstance(underlying_type, ApiPrimitiveType):
-            if underlying_type.kind in CGenerator._force_cast_primitive_kinds:
+            if underlying_type.kind in _force_cast_primitive_kinds:
                 # Don't lose the const qualifier when casting
                 constness = "const " if expression_is_const else ""
                 if expression_is_ptr:
@@ -283,28 +278,18 @@ class CGenerator:
         # from the filament API type
         # Convert ref->pointer
         underlying_type = type
-        expression_is_pointer = False
-        expression_is_const = False
         if isinstance(type, ApiPassByRef):
             if type.ref_type == ApiPassByRefType.LVALUE_REF:
                 expression = "&" + expression
             underlying_type = type.pointee
-            expression_is_pointer = True
-            expression_is_const = type.const
 
         # Convert if the underlying type is one of the math types
         if isinstance(underlying_type, ApiEnumRef):
             # Cast enums 1:1 because their constant values are the same
             expression = "(" + self._get_type_repr(underlying_type) + ")" + expression
         elif isinstance(underlying_type, ApiPrimitiveType):
-            if underlying_type.kind in CGenerator._force_cast_primitive_kinds:
-                # Don't lose the const qualifier when casting
-                constness = "const " if expression_is_const else ""
-                if expression_is_pointer:
-                    expression = "reinterpret_cast<" + constness + self._get_type_repr(underlying_type, True) \
-                                 + "*>(" + expression + ")"
-                else:
-                    return expression # handled by the tail-return-pointer
+            if underlying_type.kind in _force_cast_primitive_kinds:
+                return "convertOut(" + expression + ")"
 
         return expression
 
@@ -370,27 +355,67 @@ class CGenerator:
 
         return decls, impls
 
-    _math_types = {
-        PrimitiveTypeKind.MAT33_DOUBLE: "math::mat3",
-        PrimitiveTypeKind.MAT33_FLOAT: "math::mat3f",
-        PrimitiveTypeKind.MAT44_DOUBLE: "math::mat4",
-        PrimitiveTypeKind.MAT44_FLOAT: "math::mat4f",
-        PrimitiveTypeKind.VEC2_DOUBLE: "math::double2",
-        PrimitiveTypeKind.VEC2_FLOAT: "math::float2",
-        PrimitiveTypeKind.VEC3_DOUBLE: "math::double3",
-        PrimitiveTypeKind.VEC3_FLOAT: "math::float3",
-        PrimitiveTypeKind.VEC4_DOUBLE: "math::double4",
-        PrimitiveTypeKind.VEC4_FLOAT: "math::float4"
-    }
+    def _generate_conversion_methods(self) -> Tuple[List[str], List[str]]:
+        """
+        Generate conversion methods for value types.
+        """
+        decls = ["#include \"cfilament.h\"\n"]
+        impls = []
+
+        # Add the needed include files at the top
+        decls += {f"#include <{x.rel_header_path}>\n" for x in self.model.value_types}
+
+        # Add built-in conversions for the math types using memcpy
+        for type in _force_cast_primitive_kinds:
+            filament_name = _primitive_type_names_filament[type]
+            wrapper_name = _primitive_type_names[type]
+            decls.append(f"{wrapper_name} convertOut({filament_name});\n")
+            decls.append(f"{filament_name} convertIn({wrapper_name});\n")
+            impls.append(f"""
+inline {wrapper_name} convertOut({filament_name} input) {{
+    {wrapper_name} r;
+    static_assert(sizeof(r) == sizeof(input), "{wrapper_name} size doesnt match {filament_name}'s");
+    memcpy(&r, &input, sizeof(input));
+    return r;
+}}
+""")
+
+        for value_type in self.model.value_types:
+            # Convert from C++ value type to C repr
+            filament_name = value_type.qualified_name
+            wrapper_name = _mangle_name(value_type.qualified_name)
+            decls.append(f"{wrapper_name} convertOut({filament_name});\n")
+            impls.append(f"inline {wrapper_name} convertOut({filament_name} input) {{\n")
+            impls.append(f"    {wrapper_name} result;\n")
+
+            for field in value_type.fields:
+                expression = self._convert_out("input." + field.name, field.type)
+                impls.append(f"    result.{field.name} = {expression};\n")
+
+            impls.append("    return result;\n")
+            impls.append("}\n\n")
+
+        return decls, impls
 
     def generate(self, output_dir: Path):
         if not output_dir.is_dir():
             output_dir.mkdir()
 
-        (method_decls, method_impls) = self._generate_methods()
+        # Convert stuff
+        (conversion_decls, conversion_impls) = self._generate_conversion_methods()
+        with output_dir.joinpath("conversions.h").open("wt", buffering=4096) as fh:
+            fh.writelines(conversion_decls)
+            fh.writelines(conversion_impls)
 
+        (method_decls, method_impls) = self._generate_methods()
         self._generate_header(output_dir, method_decls)
-        self._generate_impl(output_dir, method_impls)
+        with output_dir.joinpath("cfilament.cpp").open("wt", buffering=4096) as fh:
+            fh.write("""extern "C" {\n""")
+            fh.write("#include \"cfilament.h\"\n")
+            fh.write("""};\n\n""")
+            fh.write("#include \"conversions.h\"\n")
+
+            fh.writelines(method_impls)
 
     def _get_entity_instance_type_name(self, owner: str):
         return _mangle_name(owner) + "_Instance"
@@ -441,7 +466,8 @@ class CGenerator:
             else:
                 return _primitive_type_names_filament[type_ref.kind]
 
-        elif isinstance(type_ref, ApiClassRef) or isinstance(type_ref, ApiEnumRef):
+        elif isinstance(type_ref, ApiClassRef) or isinstance(type_ref, ApiEnumRef) \
+                or isinstance(type_ref, ApiValueTypeRef):
             if api_surface:
                 return _mangle_name(type_ref.qualified_name)
             else:

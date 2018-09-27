@@ -21,6 +21,7 @@ class ApiValueType:
     """
 
     def __init__(self,
+                 rel_header_path: str,
                  qualified_name: str,
                  name: str,
                  fields: List[ApiValueTypeField],
@@ -30,6 +31,7 @@ class ApiValueType:
         :param qualified_name: The qualified name of the struct (i.e. filament::Frustum)
         :param name: The plain name of the class (i.e. Frustum) without namespace and enclosing classes.
         """
+        self.rel_header_path = rel_header_path
         self.qualified_name = qualified_name
         self.name = name
         self.fields = fields
@@ -37,6 +39,7 @@ class ApiValueType:
 
     def to_dict(self) -> dict:
         return {
+            "rel_header_path": self.rel_header_path,
             "qualified_name": self.qualified_name,
             "name": self.name,
             "fields": [x.to_dict() for x in self.fields],

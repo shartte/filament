@@ -2,7 +2,8 @@ from clang import cindex
 from clang.cindex import TranslationUnit, Cursor, CursorKind, SourceLocation, Type, TypeKind, AccessSpecifier
 from model import ApiModel, ApiClass, ApiConstructor, ApiParameterModel, ApiTypeRef, ApiEnumRef, ApiPrimitiveType, \
     PrimitiveTypeKind, ApiMethod, ApiClassRef, ApiPassByRef, ApiPassByRefType, ApiEnum, ApiEnumConstant, ApiValueType, \
-    ApiInterface, ApiAnonymousCallback, ApiCallbackRef, ApiCallback, ApiBitsetType, ApiEntityInstance, ApiConstantArray
+    ApiInterface, ApiAnonymousCallback, ApiCallbackRef, ApiCallback, ApiBitsetType, ApiEntityInstance, ApiConstantArray, \
+    ApiValueTypeRef
 from typing import Optional, Set, Union
 from directories import *
 import settings
@@ -266,6 +267,8 @@ class ApiModelParser:
             if record_name in settings.record_to_primitive_map:
                 primitive_kind = PrimitiveTypeKind[settings.record_to_primitive_map[record_name]]
                 return ApiPrimitiveType(primitive_kind)
+            elif record_name in settings.value_types:
+                return ApiValueTypeRef(record_name)
             elif record_name in settings.hidden_apis:
                 return None  # Converts to a void*
 
@@ -373,6 +376,19 @@ class ApiModelParser:
         constructors = self._build_constructor_models(cursor)
         (methods, static_methods) = self._build_method_models(cursor)
 
+        rel_header_path = self._get_relative_path_from_cursor(cursor)
+
+        return ApiClass(
+            rel_header_path,
+            qualified_name,
+            class_name,
+            destructible,
+            constructors,
+            methods,
+            static_methods
+        )
+
+    def _get_relative_path_from_cursor(self, cursor: Cursor) -> str:
         # Figure out the relative include path
         rel_header_path = None
         abs_header_path = Path(cursor.location.file.name)
@@ -389,15 +405,7 @@ class ApiModelParser:
         # Normalize to Linux style path separators
         rel_header_path = rel_header_path.replace("\\", "/")
 
-        return ApiClass(
-            rel_header_path,
-            qualified_name,
-            class_name,
-            destructible,
-            constructors,
-            methods,
-            static_methods
-        )
+        return rel_header_path
 
     def _build_interface_model(self, cursor: Cursor) -> Optional[ApiInterface]:
         """
@@ -456,7 +464,10 @@ class ApiModelParser:
                         field_type = self._build_type_model(union_child.type)
                         fields.append(ApiValueTypeField(union_child.spelling, field_type))
 
+        rel_header_path = self._get_relative_path_from_cursor(cursor)
+
         return ApiValueType(
+            rel_header_path,
             qualified_name,
             class_name,
             fields,
