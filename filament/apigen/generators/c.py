@@ -188,8 +188,13 @@ class CGenerator:
                 name = _mangle_name(api_enum.qualified_name)
                 base_type = _primitive_type_names[api_enum.base_type]
                 fh.write(f"typedef enum _{name} : {base_type} {{\n")
+                unsigned_enum = api_enum.base_type in {PrimitiveTypeKind.UINT8, PrimitiveTypeKind.UINT16,
+                                                       PrimitiveTypeKind.UINT32, PrimitiveTypeKind.UINT64}
                 for constant in api_enum.constants:
-                    fh.write(f"   {name}_{constant.name} = {constant.value},\n")
+                    if constant.value < 0 and unsigned_enum:
+                        fh.write(f"   {name}_{constant.name} = ({base_type}){constant.value},\n")
+                    else:
+                        fh.write(f"   {name}_{constant.name} = {constant.value},\n")
                 fh.write(f"}} {name};\n\n")
             fh.write("\n")
 

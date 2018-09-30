@@ -393,6 +393,19 @@ target_link_libraries(${TARGET} PRIVATE
         $<$<AND:$<PLATFORM_ID:Linux>,$<CONFIG:Release>>:${LINUX_LINKER_OPTIMIZATION_FLAGS}>
 )
 
+add_custom_command(
+        OUTPUT  ${CMAKE_CURRENT_SOURCE_DIR}/apigen/c_wrapper/cfilament.cpp
+        COMMAND python ${CMAKE_CURRENT_SOURCE_DIR}/apigen/apigen.py
+)
+
+
+add_library(
+        cfilament
+        SHARED
+        ${CMAKE_CURRENT_SOURCE_DIR}/apigen/c_wrapper/cfilament.cpp
+)
+target_link_libraries(cfilament PRIVATE ${TARGET})
+
 # ==================================================================================================
 # Installation
 # ==================================================================================================
