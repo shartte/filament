@@ -73,6 +73,8 @@ _primitive_type_names_filament = {
 
     PrimitiveTypeKind.ENTITY: "utils::Entity",
 
+    PrimitiveTypeKind.SAMPLER_PARAMS: "filament::driver::SamplerParams",
+
     # Special math types for which we leave it up to the client what to do
     # We just specify the memory layout
     PrimitiveTypeKind.LINEAR_COLOR: "filament::LinearColor",
@@ -111,7 +113,8 @@ _force_cast_primitive_kinds = {
     PrimitiveTypeKind.VEC3_FLOAT,
     PrimitiveTypeKind.VEC4_DOUBLE,
     PrimitiveTypeKind.VEC4_FLOAT,
-    PrimitiveTypeKind.QUATERNION_FLOAT
+    PrimitiveTypeKind.QUATERNION_FLOAT,
+    PrimitiveTypeKind.SAMPLER_PARAMS
 }
 
 
@@ -269,7 +272,7 @@ class CGenerator:
             expression = "(" + self._get_type_repr(underlying_type, False) + ")" + expression
         elif isinstance(underlying_type, ApiPrimitiveType):
             if underlying_type.kind in _force_cast_primitive_kinds:
-                return "convertIn(" + expression + ")"
+                return "convertIn" + _primitive_type_names[underlying_type.kind] + "(" + expression + ")"
         elif isinstance(underlying_type, ApiClassRef) and isinstance(type, ApiPassByRef):
             # For opaque handles, the typedef on the API surface is already to a pointer
             if type.ref_type == ApiPassByRefType.POINTER:
@@ -278,6 +281,10 @@ class CGenerator:
                 return "(" + underlying_type.qualified_name + "&)(" + expression + ")"
             elif type.ref_type == ApiPassByRefType.RVALUE_REF:
                 return "std::move((" + underlying_type.qualified_name + "&&)(" + expression + "))"
+        elif isinstance(underlying_type, ApiValueTypeRef):
+            return "convertIn(" + expression + ")"
+        elif isinstance(underlying_type, ApiBitsetType):
+            return "convertInBitset(" + expression + ")"
 
         return expression
 
@@ -299,10 +306,14 @@ class CGenerator:
             expression = "(" + self._get_type_repr(underlying_type) + ")" + expression
         elif isinstance(underlying_type, ApiPrimitiveType):
             if underlying_type.kind in _force_cast_primitive_kinds:
-                return "convertOut(" + expression + ")"
+                return "convertOut" + _primitive_type_names[underlying_type.kind] + "(" + expression + ")"
         elif isinstance(underlying_type, ApiClassRef) and isinstance(type, ApiPassByRef):
             # For opaque handles, the typedef on the API surface is already to a pointer
             return "(" + _mangle_name(underlying_type.qualified_name) + ")(" + expression + ")"
+        elif isinstance(underlying_type, ApiBitsetType):
+            return "convertOutBitset(" + expression + ")"
+        elif isinstance(underlying_type, ApiValueTypeRef):
+            return "convertOut(" + expression + ")"
 
         return expression
 
@@ -377,14 +388,41 @@ class CGenerator:
         # Add the needed include files at the top
         decls += {f"#include <{x.rel_header_path}>\n" for x in self.model.value_types}
 
+        # Generate conversion methods for bitsets
+        # This code assumes that our external representation for bitsets uses the same storage
+        # type as the bitset itself, and that current only N=1 is supported
+        impls += [
+            """
+            template<typename T>
+            inline utils::bitset<T> convertInBitset(T t) {
+                utils::bitset<T> b;
+                static_assert(sizeof(b) == sizeof(t), "bitset size differs from expected size");
+                memcpy(&b, &t, sizeof(t));
+                return b;
+            }
+            
+            template<typename T>
+            inline T convertOutBitset(utils::bitset<T> b) {
+                T t;
+                static_assert(sizeof(b) == sizeof(t), "bitset size differs from expected size");
+                memcpy(&t, &b, sizeof(b));
+                return t;                
+            }
+            """
+        ]
+
         # Add built-in conversions for the math types using memcpy
         for type in _force_cast_primitive_kinds:
             filament_name = _primitive_type_names_filament[type]
             wrapper_name = _primitive_type_names[type]
-            decls.append(f"{wrapper_name} convertOut({filament_name});\n")
-            decls.append(f"{filament_name} convertIn({wrapper_name});\n")
+
+            # Method overloading sadly doesn't cut it for the uint32_t typedefs we use
+            name_suffix = wrapper_name
+
+            decls.append(f"{wrapper_name} convertOut{name_suffix}({filament_name});\n")
+            decls.append(f"{filament_name} convertIn{name_suffix}({wrapper_name});\n")
             impls.append(f"""
-inline {wrapper_name} convertOut({filament_name} input) {{
+inline {wrapper_name} convertOut{name_suffix}({filament_name} input) {{
     {wrapper_name} r;
     static_assert(sizeof(r) == sizeof(input), "{wrapper_name} size doesnt match {filament_name}'s");
     memcpy(&r, &input, sizeof(input));
@@ -392,44 +430,84 @@ inline {wrapper_name} convertOut({filament_name} input) {{
 }}
 
 // Directly cast const pointers
-inline const {wrapper_name}* convertOut(const {filament_name}* input) {{
+inline const {wrapper_name}* convertOut{name_suffix}(const {filament_name}* input) {{
     return reinterpret_cast<const {wrapper_name}*>(input);
 }}
 
 // Directly cast non-const pointers when write-only arguments are passed
-inline {filament_name}* convertIn({wrapper_name}* input) {{
+inline {filament_name}* convertIn{name_suffix}({wrapper_name}* input) {{
     return reinterpret_cast<{filament_name}*>(input);
 }}
 
 // Directly cast const pointers when read-only arguments are passed
-inline const {filament_name}* convertIn(const {wrapper_name}* input) {{
+inline const {filament_name}* convertIn{name_suffix}(const {wrapper_name}* input) {{
     return reinterpret_cast<const {filament_name}*>(input);
 }}
 """)
 
+        # Convert from C++ value type to C repr
         for value_type in self.model.value_types:
-            # Convert from C++ value type to C repr
-            filament_name = value_type.qualified_name
-            wrapper_name = _mangle_name(value_type.qualified_name)
-            decls.append(f"{wrapper_name} convertOut({filament_name});\n")
-            impls.append(f"inline {wrapper_name} convertOut({filament_name} input) {{\n")
-            impls.append(f"    {wrapper_name} result;\n")
-
-            for field in value_type.fields:
-
-                # Arrays need to be considered
-                if isinstance(field.type, ApiConstantArray):
-                    for i in range(0, field.type.element_count):
-                        expression = self._convert_out(f"input.{field.name}[{i}]", field.type.element_type)
-                        impls.append(f"    result.{field.name}[{i}] = {expression};\n")
-                else:
-                    expression = self._convert_out("input." + field.name, field.type)
-                    impls.append(f"    result.{field.name} = {expression};\n")
-
-            impls.append("    return result;\n")
-            impls.append("}\n\n")
+            v_decls, v_impls = self._generate_conversion_method_for_value_type(value_type)
+            decls += v_decls
+            impls += v_impls
 
         return decls, impls
+
+    def _generate_conversion_method_for_value_type(self, value_type):
+        decls = []
+        impls_in = []
+        impls_out = []
+
+        filament_name = value_type.qualified_name
+        wrapper_name = _mangle_name(value_type.qualified_name)
+
+        decls.append(f"{wrapper_name} convertOut({filament_name});\n")
+
+        def add_force_cast(filament_type, wrapper_type, impls_in, impls_out):
+            decls.append(f"{wrapper_type}* convertOut({filament_type}*);\n")
+            decls.append(f"{filament_type}* convertIn({wrapper_type}*);\n")
+            impls_in += [
+                f"inline {filament_type}* convertIn({wrapper_type}* input) {{\n",
+                f"    return reinterpret_cast<{filament_type}*>(input);\n",
+                "}\n\n"
+            ]
+            impls_out += [
+                f"inline {wrapper_type}* convertOut({filament_type}* input) {{\n",
+                f"    return reinterpret_cast<{wrapper_type}*>(input);\n",
+                "}\n\n"
+            ]
+        add_force_cast(filament_name, wrapper_name, impls_in, impls_out)
+        add_force_cast("const " + filament_name, "const " + wrapper_name, impls_in, impls_out)
+
+        # We consider the memory layout of value types to be interchangeable
+
+        impls_in.append(f"inline {filament_name} convertIn({wrapper_name} input) {{\n")
+        impls_in.append(f"    {filament_name} result;\n")
+        impls_out.append(f"inline {wrapper_name} convertOut({filament_name} input) {{\n")
+        impls_out.append(f"    {wrapper_name} result;\n")
+
+        for field in value_type.fields:
+            # Arrays need to be considered
+            if isinstance(field.type, ApiConstantArray):
+                for i in range(0, field.type.element_count):
+                    expression = self._convert_out(f"input.{field.name}[{i}]", field.type.element_type)
+                    impls_out.append(f"    result.{field.name}[{i}] = {expression};\n")
+
+                    expression = self._convert_in(f"input.{field.name}[{i}]", field.type.element_type)
+                    impls_in.append(f"    result.{field.name}[{i}] = {expression};\n")
+            else:
+                expression = self._convert_out("input." + field.name, field.type)
+                impls_out.append(f"    result.{field.name} = {expression};\n")
+
+                expression = self._convert_in("input." + field.name, field.type)
+                impls_in.append(f"    result.{field.name} = {expression};\n")
+
+        impls_in.append("    return result;\n")
+        impls_in.append("}\n\n")
+        impls_out.append("    return result;\n")
+        impls_out.append("}\n\n")
+
+        return decls, impls_in + impls_out
 
     def generate(self, output_dir: Path):
         if not output_dir.is_dir():

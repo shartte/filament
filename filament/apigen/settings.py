@@ -7,7 +7,8 @@ value_types = {
     "filament::driver::FaceOffsets",
     "filament::Material::ParameterInfo",
     "filament::RenderableManager::Bone",
-    "filament::View::DynamicResolutionOptions"
+    "filament::View::DynamicResolutionOptions",
+    "filament::Viewport"
 }
 
 # We define certain value types as special "primitives" because we expect
@@ -80,7 +81,7 @@ public_apis = {
     "filament::Stream",
     "filament::Stream::Builder",
     "filament::TransformManager",
-    "filament::Viewport",
+    #"filament::Viewport",
     "filament::View",
     "filament::driver::BufferDescriptor",
     "filament::driver::PixelBufferDescriptor"
