@@ -255,7 +255,6 @@ class CGenerator:
         # from the filament API type
         # Convert ref->pointer
         underlying_type = type
-        expression_is_const = False
         expression_is_ptr = False
         if isinstance(type, ApiPassByRef):
             if type.ref_type == ApiPassByRefType.LVALUE_REF:
@@ -263,7 +262,6 @@ class CGenerator:
             elif type.ref_type == ApiPassByRefType.POINTER:
                 expression_is_ptr = True
             underlying_type = type.pointee
-            expression_is_const = type.const
 
         # Convert if the underlying type is one of the math types
         if isinstance(underlying_type, ApiEnumRef):
@@ -272,6 +270,14 @@ class CGenerator:
         elif isinstance(underlying_type, ApiPrimitiveType):
             if underlying_type.kind in _force_cast_primitive_kinds:
                 return "convertIn(" + expression + ")"
+        elif isinstance(underlying_type, ApiClassRef) and isinstance(type, ApiPassByRef):
+            # For opaque handles, the typedef on the API surface is already to a pointer
+            if type.ref_type == ApiPassByRefType.POINTER:
+                return "(" + underlying_type.qualified_name + "*)(" + expression + ")"
+            elif type.ref_type == ApiPassByRefType.LVALUE_REF:
+                return "(" + underlying_type.qualified_name + "&)(" + expression + ")"
+            elif type.ref_type == ApiPassByRefType.RVALUE_REF:
+                return "std::move((" + underlying_type.qualified_name + "&&)(" + expression + "))"
 
         return expression
 
@@ -280,10 +286,12 @@ class CGenerator:
         # from the filament API type
         # Convert ref->pointer
         underlying_type = type
+        expression_is_const = False
         if isinstance(type, ApiPassByRef):
             if type.ref_type == ApiPassByRefType.LVALUE_REF:
                 expression = "&" + expression
             underlying_type = type.pointee
+            expression_is_const = type.const
 
         # Convert if the underlying type is one of the math types
         if isinstance(underlying_type, ApiEnumRef):
@@ -292,6 +300,9 @@ class CGenerator:
         elif isinstance(underlying_type, ApiPrimitiveType):
             if underlying_type.kind in _force_cast_primitive_kinds:
                 return "convertOut(" + expression + ")"
+        elif isinstance(underlying_type, ApiClassRef) and isinstance(type, ApiPassByRef):
+            # For opaque handles, the typedef on the API surface is already to a pointer
+            return "(" + _mangle_name(underlying_type.qualified_name) + ")(" + expression + ")"
 
         return expression
 
@@ -389,6 +400,11 @@ inline const {wrapper_name}* convertOut(const {filament_name}* input) {{
 inline {filament_name}* convertIn({wrapper_name}* input) {{
     return reinterpret_cast<{filament_name}*>(input);
 }}
+
+// Directly cast const pointers when read-only arguments are passed
+inline const {filament_name}* convertIn(const {wrapper_name}* input) {{
+    return reinterpret_cast<const {filament_name}*>(input);
+}}
 """)
 
         for value_type in self.model.value_types:
@@ -465,6 +481,10 @@ inline {filament_name}* convertIn({wrapper_name}* input) {{
             return "void"
 
         if isinstance(type_ref, ApiPassByRef):
+            # Detect opaque handle and use the typedef name (which already is a pointer)
+            if isinstance(type_ref.pointee, ApiClassRef):
+                return _mangle_name(type_ref.pointee.qualified_name)
+
             result = ""
             if type_ref.const:
                 result = "const "
@@ -515,7 +535,7 @@ inline {filament_name}* convertIn({wrapper_name}* input) {{
         elif isinstance(type_ref, ApiStringType):
             return "const char*"
 
-        return type_ref.to_dict().__repr__()
+        raise RuntimeError("Don't know how to represent type: " + type_ref.to_dict().__repr__())
 
     def _create_method_header(self, parent_class: Union[ApiClass, ApiInterface],
                               method: ApiMethod,

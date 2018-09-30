@@ -23,6 +23,7 @@
 #include <mutex>
 
 #include <utils/Entity.h>
+#include "compiler.h"
 
 namespace utils {
 
@@ -75,9 +76,11 @@ public:
 
     // registers a listener to be called when an entity is destroyed. thread safe.
     // if the listener is already register, this method has no effect.
+    UTILS_HIDE_FROM_SPEC
     void registerListener(Listener* l) noexcept;
 
     // unregisters a listener.
+    UTILS_HIDE_FROM_SPEC
     void unregisterListener(Listener* l) noexcept;
 
     // destroys all entities and return to the initial state. Thread Safe.
