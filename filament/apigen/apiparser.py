@@ -1,14 +1,13 @@
-from clang import cindex
+import re
+from typing import Optional, Set, Union, Any, Tuple
+
+import settings
 from clang.cindex import TranslationUnit, Cursor, CursorKind, SourceLocation, Type, TypeKind, AccessSpecifier
+from directories import *
 from model import ApiModel, ApiClass, ApiConstructor, ApiParameterModel, ApiTypeRef, ApiEnumRef, ApiPrimitiveType, \
     PrimitiveTypeKind, ApiMethod, ApiClassRef, ApiPassByRef, ApiPassByRefType, ApiEnum, ApiEnumConstant, ApiValueType, \
     ApiInterface, ApiAnonymousCallback, ApiCallbackRef, ApiCallback, ApiBitsetType, ApiEntityInstance, ApiConstantArray, \
-    ApiValueTypeRef, ApiStringType
-from typing import Optional, Set, Union
-from directories import *
-import settings
-import re
-
+    ApiValueTypeRef, ApiStringType, ApiOpaqueRef
 # Cache of paths that are considered public includes of the filament API
 from model.value_types import ApiValueTypeField
 
@@ -177,8 +176,10 @@ def _dump_cursor(cursor: Cursor, indent: str = ""):
     for c in cursor.get_children():
         _dump_cursor(c, indent)
 
+
 # Declaration should be hidden from API spec document
 ATTR_HIDE_FROM_SPEC = "hide_from_spec"
+
 
 # Find all annotations of the form __attribute__((annotate("x")))
 def _find_annotations(cursor: Cursor) -> Set[str]:
@@ -188,6 +189,38 @@ def _find_annotations(cursor: Cursor) -> Set[str]:
     for child in cursor.get_children():
         result.update(_find_annotations(child))
     return result
+
+
+def get_method_comparison_obj(method) -> Tuple[Any, bool]:
+    method_obj = method.to_dict()
+    # Clear out the const-ness of the return-value for comparisons sake
+    has_const_return = False
+    if isinstance(method.return_type, ApiPassByRef):
+        if method.return_type.const:
+            method_obj["return_type"]["const"] = False
+            has_const_return = True
+    return method_obj, has_const_return
+
+
+def _remove_duplicate_methods(methods) -> List[ApiMethod]:
+    # Remove duplicates, which can occur because of const methods
+    filtered_methods = []
+    for i in range(0, len(methods)):
+        method, i_has_const_return = get_method_comparison_obj(methods[i])
+        keep = True
+
+        for j in range(i + 1, len(methods)):
+            other_method, j_has_const_return = get_method_comparison_obj(methods[j])
+            if method == other_method:
+                # Prefer to delete the const version
+                print("Removing duplicate method", methods[i].name)
+                if not i_has_const_return:
+                    keep = False
+                    break
+
+        if keep:
+            filtered_methods.append(methods[i])
+    return filtered_methods
 
 
 class ApiModelParser:
@@ -269,7 +302,13 @@ class ApiModelParser:
             elif pointee_type.kind == TypeKind.CHAR_S and const_ref:
                 return ApiStringType()
 
-            return ApiPassByRef(const_ref, ApiPassByRefType.POINTER, self._build_type_model(pointee_type))
+            pointee_model = self._build_type_model(pointee_type)
+
+            if isinstance(pointee_model, ApiClassRef):
+                if pointee_model.qualified_name in settings.hidden_apis:
+                    return ApiOpaqueRef(pointee_model.qualified_name)  # Converts to a void*
+
+            return ApiPassByRef(const_ref, ApiPassByRefType.POINTER, pointee_model)
         elif type.kind == TypeKind.ELABORATED:
             # Elaborated types just seem to be a namespace qualified ref
             named_type = type.get_named_type()
@@ -284,8 +323,6 @@ class ApiModelParser:
                 return ApiPrimitiveType(primitive_kind)
             elif record_name in settings.value_types:
                 return ApiValueTypeRef(record_name)
-            elif record_name in settings.hidden_apis:
-                return None  # Converts to a void*
 
             # Handling templates really doesn't work nicely with libclang right now
             if record_name == "utils::bitset<unsigned int, 1, void>":
@@ -380,7 +417,11 @@ class ApiModelParser:
             else:
                 methods.append(method)
 
+        methods = _remove_duplicate_methods(methods)
+        static_methods = _remove_duplicate_methods(static_methods)
+
         return methods, static_methods
+
 
     def _build_class_model(self, cursor: Cursor) -> Optional[ApiClass]:
         """

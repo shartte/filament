@@ -1,165 +1,22 @@
-from typing import Union, Set, Tuple
-
-from model import *
 from pathlib import Path
+from typing import Set, Tuple
 
-# Primitives that are usable as return-types directly
-_trivial_primitives = {
-    PrimitiveTypeKind.BOOL,
-    PrimitiveTypeKind.UINT8,
-    PrimitiveTypeKind.INT8,
-    PrimitiveTypeKind.UINT16,
-    PrimitiveTypeKind.INT16,
-    PrimitiveTypeKind.UINT32,
-    PrimitiveTypeKind.INT32,
-    PrimitiveTypeKind.UINT64,
-    PrimitiveTypeKind.INT64,
-    PrimitiveTypeKind.SIZE_T,
-    PrimitiveTypeKind.FLOAT,
-    PrimitiveTypeKind.DOUBLE
-}
-
-_primitive_type_names = {
-    PrimitiveTypeKind.BOOL: "FBOOL",
-    PrimitiveTypeKind.UINT8: "uint8_t",
-    PrimitiveTypeKind.INT8: "int8_t",
-    PrimitiveTypeKind.UINT16: "uint16_t",
-    PrimitiveTypeKind.INT16: "int16_t",
-    PrimitiveTypeKind.UINT32: "uint32_t",
-    PrimitiveTypeKind.INT32: "int32_t",
-    PrimitiveTypeKind.UINT64: "uint64_t",
-    PrimitiveTypeKind.INT64: "int64_t",
-    PrimitiveTypeKind.SIZE_T: "size_t",
-    PrimitiveTypeKind.FLOAT: "float",
-    PrimitiveTypeKind.DOUBLE: "double",
-
-    PrimitiveTypeKind.ENTITY: "FENTITY",
-
-    PrimitiveTypeKind.SAMPLER_PARAMS: "FSAMPLER_PARAMS",
-
-    # Special math types for which we leave it up to the client what to do
-    # We just specify the memory layout
-    PrimitiveTypeKind.LINEAR_COLOR: "FLINEAR_COLOR",
-    PrimitiveTypeKind.LINEAR_COLOR_A: "FLINEAR_COLOR_A",
-    PrimitiveTypeKind.MAT33_DOUBLE: "FMAT33_DOUBLE",
-    PrimitiveTypeKind.MAT33_FLOAT: "FMAT33_FLOAT",
-    PrimitiveTypeKind.MAT44_DOUBLE: "FMAT44_DOUBLE",
-    PrimitiveTypeKind.MAT44_FLOAT: "FMAT44_FLOAT",
-    PrimitiveTypeKind.VEC2_DOUBLE: "FVEC2_DOUBLE",
-    PrimitiveTypeKind.VEC2_FLOAT: "FVEC2_FLOAT",
-    PrimitiveTypeKind.VEC3_DOUBLE: "FVEC3_DOUBLE",
-    PrimitiveTypeKind.VEC3_FLOAT: "FVEC3_FLOAT",
-    PrimitiveTypeKind.VEC4_DOUBLE: "FVEC4_DOUBLE",
-    PrimitiveTypeKind.VEC4_FLOAT: "FVEC4_FLOAT",
-
-    PrimitiveTypeKind.QUATERNION_FLOAT: "FQUATERNION_FLOAT",
-
-    PrimitiveTypeKind.FRUSTUM: "FFRUSTUM"
-}
-
-_primitive_type_names_filament = {
-    PrimitiveTypeKind.BOOL: "bool",
-    PrimitiveTypeKind.UINT8: "uint8_t",
-    PrimitiveTypeKind.INT8: "int8_t",
-    PrimitiveTypeKind.UINT16: "uint16_t",
-    PrimitiveTypeKind.INT16: "int16_t",
-    PrimitiveTypeKind.UINT32: "uint32_t",
-    PrimitiveTypeKind.INT32: "int32_t",
-    PrimitiveTypeKind.UINT64: "uint64_t",
-    PrimitiveTypeKind.INT64: "int64_t",
-    PrimitiveTypeKind.SIZE_T: "size_t",
-    PrimitiveTypeKind.FLOAT: "float",
-    PrimitiveTypeKind.DOUBLE: "double",
-
-    PrimitiveTypeKind.ENTITY: "utils::Entity",
-
-    PrimitiveTypeKind.SAMPLER_PARAMS: "filament::driver::SamplerParams",
-
-    # Special math types for which we leave it up to the client what to do
-    # We just specify the memory layout
-    PrimitiveTypeKind.LINEAR_COLOR: "filament::LinearColor",
-    PrimitiveTypeKind.LINEAR_COLOR_A: "filament::LinearColorA",
-    PrimitiveTypeKind.MAT33_DOUBLE: "math::mat3",
-    PrimitiveTypeKind.MAT33_FLOAT: "math::mat3f",
-    PrimitiveTypeKind.MAT44_DOUBLE: "math::mat4",
-    PrimitiveTypeKind.MAT44_FLOAT: "math::mat4f",
-    PrimitiveTypeKind.VEC2_DOUBLE: "math::double2",
-    PrimitiveTypeKind.VEC2_FLOAT: "math::float2",
-    PrimitiveTypeKind.VEC3_DOUBLE: "math::double3",
-    PrimitiveTypeKind.VEC3_FLOAT: "math::float3",
-    PrimitiveTypeKind.VEC4_DOUBLE: "math::double4",
-    PrimitiveTypeKind.VEC4_FLOAT: "math::float4",
-
-    PrimitiveTypeKind.QUATERNION_FLOAT: "math::quatf",
-
-    PrimitiveTypeKind.FRUSTUM: "filament::Frustum"
-}
-
-#
-# The fake primitives in this list are in reality value types that are:
-# - trivially copyable
-# - have the same memory layout on both the wrapper API and filament API definitions
-#
-_force_cast_primitive_kinds = {
-    PrimitiveTypeKind.FRUSTUM,
-    PrimitiveTypeKind.ENTITY,
-    PrimitiveTypeKind.MAT33_DOUBLE,
-    PrimitiveTypeKind.MAT33_FLOAT,
-    PrimitiveTypeKind.MAT44_DOUBLE,
-    PrimitiveTypeKind.MAT44_FLOAT,
-    PrimitiveTypeKind.VEC2_DOUBLE,
-    PrimitiveTypeKind.VEC2_FLOAT,
-    PrimitiveTypeKind.VEC3_DOUBLE,
-    PrimitiveTypeKind.VEC3_FLOAT,
-    PrimitiveTypeKind.VEC4_DOUBLE,
-    PrimitiveTypeKind.VEC4_FLOAT,
-    PrimitiveTypeKind.QUATERNION_FLOAT,
-    PrimitiveTypeKind.SAMPLER_PARAMS
-}
-
-
-def _needs_return_value_transform(return_type: ApiTypeRef) -> bool:
-    if isinstance(return_type, ApiPrimitiveType):
-        return return_type.kind not in _trivial_primitives
-    elif isinstance(return_type, ApiValueTypeRef):
-        return True
-    return False  # Might still apply for R value references
-
-
-def _mangle_name(name: str) -> str:
-    return name.replace("::", "_")
+from generators import c_type_conversion
+from generators.c_delegates import DelegateFactory, CallForwardType
+from generators.c_name_mangling import resolve_overloaded_name
+from generators.c_type_conversion import ExpressionTypeConverter
+from model import *
+from .c_name_mangling import mangle_name
 
 
 class CGenerator:
 
     def __init__(self, model: ApiModel):
         self.model = model
+        self.type_converter = ExpressionTypeConverter()
+        self.delegate_factory = DelegateFactory(self.type_converter)
 
-    @staticmethod
-    def _get_exported_method_name(class_model: Union[ApiClass, ApiInterface], method_model: ApiMethod) -> str:
-        """
-        Gets the name for an exported method, considering method overloading.
-        """
-        name_prefix = _mangle_name(class_model.qualified_name) + "_"
-
-        # Are there other models in the class with the same name?
-        conflicts = []
-        if isinstance(class_model, ApiClass):
-            other_methods = class_model.methods + class_model.static_methods
-        else:
-            other_methods = class_model.methods
-        for other_method in other_methods:
-            if other_method.name == method_model.name:
-                conflicts.append(other_method)
-
-        if len(conflicts) == 0 or (len(conflicts) == 1 and conflicts[0] == method_model):
-            return name_prefix + method_model.name
-
-        index_of_method = conflicts.index(method_model) + 1
-
-        return name_prefix + method_model.name + str(index_of_method)
-
-    def _generate_header(self, output_dir: Path, method_decls: List[str]):
+    def _generate_header(self, output_dir: Path):
         with output_dir.joinpath("cfilament.h").open("wt", buffering=4096) as fh:
             fh.write("#ifndef __CFILAMENT_H__\n")
             fh.write("#define __CFILAMENT_H__\n\n")
@@ -173,20 +30,22 @@ class CGenerator:
 
             # Predeclare all opaque classes
             for api_class in self.model.classes:
-                name = _mangle_name(api_class.qualified_name)
+                name = mangle_name(api_class.qualified_name)
                 fh.write(f"typedef struct _{name}* {name};\n")
             fh.write("\n")
 
             # Predeclare all entity instance reference types
             for owner_name in self._collect_all_entity_instances():
-                name = self._get_entity_instance_type_name(owner_name)
+                name = self.type_converter.get_wrapper_type(ApiEntityInstance(owner_name))
                 fh.write(f"typedef uint32_t {name};\n")
             fh.write("\n")
 
+            type_converter = self.type_converter
+
             # Predeclare all enums
             for api_enum in self.model.enums:
-                name = _mangle_name(api_enum.qualified_name)
-                base_type = _primitive_type_names[api_enum.base_type]
+                name = mangle_name(api_enum.qualified_name)
+                base_type = type_converter.get_wrapper_type(ApiPrimitiveType(api_enum.base_type))
                 fh.write(f"typedef enum _{name} : {base_type} {{\n")
                 unsigned_enum = api_enum.base_type in {PrimitiveTypeKind.UINT8, PrimitiveTypeKind.UINT16,
                                                        PrimitiveTypeKind.UINT32, PrimitiveTypeKind.UINT64}
@@ -200,7 +59,7 @@ class CGenerator:
 
             # Predeclare all value types
             for value_type in self.model.value_types:
-                name = _mangle_name(value_type.qualified_name)
+                name = mangle_name(value_type.qualified_name)
                 fh.write(f"typedef struct _{name} {{\n")
                 for field in value_type.fields:
                     field_type = field.type
@@ -209,14 +68,14 @@ class CGenerator:
                         element_count = field_type.element_count
                         field_name += f"[{element_count}]"
                         field_type = field_type.element_type
-                    fh.write(f"{self._get_type_repr(field_type)} {field_name};\n")
+                    fh.write(f"{type_converter.get_wrapper_type(field_type)} {field_name};\n")
                 fh.write(f"}} {name};\n\n")
 
             # Declare all callback types
             for callback in self.model.callbacks:
                 fh.write("typedef ")
                 decl = self._get_function_pointer_decl(
-                    _mangle_name(callback.qualified_name),
+                    mangle_name(callback.qualified_name),
                     callback.return_type,
                     callback.parameters
                 )
@@ -225,7 +84,7 @@ class CGenerator:
 
             # Declare a struct for all interfaces and add a destructor callback
             for interface in self.model.interfaces:
-                name = _mangle_name(interface.qualified_name)
+                name = mangle_name(interface.qualified_name)
 
                 # Convert from methods to fields with an appropriate function pointer type
                 # This form does not supported overloaded methods on interfaces
@@ -236,14 +95,15 @@ class CGenerator:
                 interface_methods.append(ApiMethod("free", None, []))
 
                 for method in interface_methods:
-                    method_name = self._get_exported_method_name(interface, method)
+                    method_name = resolve_overloaded_name(interface, method.name, method.parameters)
                     method_parameters = method.parameters[:]
                     # Add a user arg to all callbacks
                     method_parameters.append(ApiPassByRef(False, ApiPassByRefType.POINTER, None))  # void*
-                    fh.write("typedef ")
-                    fh.write(self._get_function_pointer_decl(method_name, method.return_type, method.parameters))
-                    fh.write(";\n")
-                    fields += f"    {method_name} {method.name};\n"
+                    fields += "    typedef "
+                    fields += self._get_function_pointer_decl("fn_" + method_name, method.return_type,
+                                                              method.parameters)
+                    fields += ";\n"
+                    fields += f"    fn_{method_name} {method.name};\n"
                 fields += f"    void* user;\n"
                 fh.write("\n")
 
@@ -251,137 +111,44 @@ class CGenerator:
                 fh.writelines(fields)
                 fh.write(f"}} {name};\n\n")
 
-            fh.writelines(method_decls)
+            fh.writelines(self.delegate_factory.declarations.getvalue())
 
             fh.write("#endif\n")
 
-    def _convert_in(self, expression: str, type: ApiTypeRef) -> str:
-        # Return the expression converted from the API surface type
-        # to the filament API type
-
-        # Return the expression converted to the API surface type
-        # from the filament API type
-        # Convert ref->pointer
-        underlying_type = type
-        expression_is_ptr = False
-        if isinstance(type, ApiPassByRef):
-            if type.ref_type == ApiPassByRefType.LVALUE_REF:
-                expression = "*" + expression
-            elif type.ref_type == ApiPassByRefType.POINTER:
-                expression_is_ptr = True
-            underlying_type = type.pointee
-
-        # Convert if the underlying type is one of the math types
-        if isinstance(underlying_type, ApiEnumRef):
-            # Cast enums 1:1 because their constant values are the same
-            expression = "(" + self._get_type_repr(underlying_type, False) + ")" + expression
-        elif isinstance(underlying_type, ApiPrimitiveType):
-            if underlying_type.kind in _force_cast_primitive_kinds:
-                return "convertIn" + _primitive_type_names[underlying_type.kind] + "(" + expression + ")"
-        elif isinstance(underlying_type, ApiClassRef) and isinstance(type, ApiPassByRef):
-            # For opaque handles, the typedef on the API surface is already to a pointer
-            if type.ref_type == ApiPassByRefType.POINTER:
-                return "(" + underlying_type.qualified_name + "*)(" + expression + ")"
-            elif type.ref_type == ApiPassByRefType.LVALUE_REF:
-                return "(" + underlying_type.qualified_name + "&)(" + expression + ")"
-            elif type.ref_type == ApiPassByRefType.RVALUE_REF:
-                return "std::move((" + underlying_type.qualified_name + "&&)(" + expression + "))"
-        elif isinstance(underlying_type, ApiValueTypeRef):
-            return "convertIn(" + expression + ")"
-        elif isinstance(underlying_type, ApiBitsetType):
-            return "convertInBitset(" + expression + ")"
-
-        return expression
-
-    def _convert_out(self, expression: str, type: ApiTypeRef) -> str:
-        # Return the expression converted to the API surface type
-        # from the filament API type
-        # Convert ref->pointer
-        underlying_type = type
-        expression_is_const = False
-        if isinstance(type, ApiPassByRef):
-            if type.ref_type == ApiPassByRefType.LVALUE_REF:
-                expression = "&" + expression
-            underlying_type = type.pointee
-            expression_is_const = type.const
-
-        # Convert if the underlying type is one of the math types
-        if isinstance(underlying_type, ApiEnumRef):
-            # Cast enums 1:1 because their constant values are the same
-            expression = "(" + self._get_type_repr(underlying_type) + ")" + expression
-        elif isinstance(underlying_type, ApiPrimitiveType):
-            if underlying_type.kind in _force_cast_primitive_kinds:
-                return "convertOut" + _primitive_type_names[underlying_type.kind] + "(" + expression + ")"
-        elif isinstance(underlying_type, ApiClassRef) and isinstance(type, ApiPassByRef):
-            # For opaque handles, the typedef on the API surface is already to a pointer
-            return "(" + _mangle_name(underlying_type.qualified_name) + ")(" + expression + ")"
-        elif isinstance(underlying_type, ApiBitsetType):
-            return "convertOutBitset(" + expression + ")"
-        elif isinstance(underlying_type, ApiValueTypeRef):
-            return "convertOut(" + expression + ")"
-
-        return expression
-
-    def _generate_methods(self) -> Tuple[List[str], List[str]]:
-
-        decls = []
-        impls = []
-
-        # Add includes for all C++ classes at the top
-        impls += [f"#include <{c.header}>\n" for c in self.model.classes]
-        impls += ["\n"]
+    def _create_delegates(self):
 
         for api_class in self.model.classes:
 
-            decls += ["//\n",
-                      f"// {api_class.qualified_name}\n",
-                      "//\n",
-                      "\n"]
-
-            # Create a reusable parameter to pass the object pointer as the first method parameter
-            this_param = ApiParameterModel(
-                "self", ApiPassByRef(False, ApiPassByRefType.POINTER, ApiClassRef(api_class.qualified_name))
-            )
+            # Object constructors are converted to static methods that return opaque pointers here
+            for constructor in api_class.constructors:
+                method = ApiMethod(
+                    "Create",
+                    ApiClassRef(api_class.qualified_name),
+                    constructor.parameters
+                )
+                self.delegate_factory.create_delegate(
+                    api_class,
+                    CallForwardType.CONSTRUCTOR,
+                    constructor.parameters
+                )
 
             for method in api_class.methods:
-                # add the thiscall parameter as the first parameter
-                method_parameters = method.parameters[:]
-                method_parameters.insert(0, this_param)
-
-                method_header, trailing_return_value = self._create_method_header(api_class, method, method_parameters)
-                decls += [method_header + ";\n"]
-
-                # Insert the actual call to the C++ method
-                args = ", ".join([self._convert_in(p.name, p.type) for p in method.parameters])
-                call_expression = f"_self->{method.name}({args})"
-
-                # Insert a return if the method return type is not void
-                return_type = method.return_type
-                if return_type is not None:
-                    if trailing_return_value:
-                        return_stmt = "*result = "
-                    else:
-                        return_stmt = "return "
-                    call_expression = return_stmt + self._convert_out(call_expression, return_type)
-
-                impls += [
-                    method_header, "\n",
-                    "{\n",
-                    # Cast the self-parameter to the C++ this pointer
-                    f"    auto _self = ({api_class.qualified_name}*){this_param.name};\n"
-                    "    ",
-                    call_expression,
-                    ";\n",
-                    "}\n\n",
-                ]
+                self.delegate_factory.create_delegate(
+                    api_class,
+                    CallForwardType.METHOD,
+                    method.parameters,
+                    method.name,
+                    method.return_type
+                )
 
             for method in api_class.static_methods:
-                method_header, trailing_return_value = self._create_method_header(api_class, method, method.parameters)
-                decls += [method_header + ";\n"]
-
-            decls += ["\n"]
-
-        return decls, impls
+                self.delegate_factory.create_delegate(
+                    api_class,
+                    CallForwardType.STATIC_METHOD,
+                    method.parameters,
+                    method.name,
+                    method.return_type
+                )
 
     def _generate_conversion_methods(self) -> Tuple[List[str], List[str]]:
         """
@@ -416,10 +183,33 @@ class CGenerator:
             """
         ]
 
+        # Generate conversion methods for EntityInstance types
+        impls += [
+            """
+            template<typename T>
+            inline utils::EntityInstance<T> convertInEntityInstance(uint32_t ei) {
+                utils::EntityInstance<T> r;
+                static_assert(sizeof(r) == sizeof(ei), "EntityInstance is not 32-bit");
+                memcpy(&r, &ei, sizeof(r));
+                return r;
+            }
+            
+            template<typename T>
+            inline uint32_t convertOutEntityInstance(utils::EntityInstance<T> ei) {
+                uint32_t r;
+                static_assert(sizeof(r) == sizeof(ei), "EntityInstance is not 32-bit");
+                memcpy(&r, &ei, sizeof(ei));
+                return r;                
+            }
+            """
+        ]
+
+        type_converter = self.type_converter
+
         # Add built-in conversions for the math types using memcpy
-        for type in _force_cast_primitive_kinds:
-            filament_name = _primitive_type_names_filament[type]
-            wrapper_name = _primitive_type_names[type]
+        for type in c_type_conversion._force_cast_primitive_kinds:
+            filament_name = type_converter.get_filament_type(ApiPrimitiveType(type))
+            wrapper_name = type_converter.get_wrapper_type(ApiPrimitiveType(type))
 
             # Method overloading sadly doesn't cut it for the uint32_t typedefs we use
             name_suffix = wrapper_name
@@ -429,6 +219,13 @@ class CGenerator:
             impls.append(f"""
 inline {wrapper_name} convertOut{name_suffix}({filament_name} input) {{
     {wrapper_name} r;
+    static_assert(sizeof(r) == sizeof(input), "{wrapper_name} size doesnt match {filament_name}'s");
+    memcpy(&r, &input, sizeof(input));
+    return r;
+}}
+
+inline {filament_name} convertIn{name_suffix}({wrapper_name} input) {{
+    {filament_name} r;
     static_assert(sizeof(r) == sizeof(input), "{wrapper_name} size doesnt match {filament_name}'s");
     memcpy(&r, &input, sizeof(input));
     return r;
@@ -464,7 +261,7 @@ inline const {filament_name}* convertIn{name_suffix}(const {wrapper_name}* input
         impls_out = []
 
         filament_name = value_type.qualified_name
-        wrapper_name = _mangle_name(value_type.qualified_name)
+        wrapper_name = mangle_name(value_type.qualified_name)
 
         decls.append(f"{wrapper_name} convertOut({filament_name});\n")
 
@@ -481,6 +278,7 @@ inline const {filament_name}* convertIn{name_suffix}(const {wrapper_name}* input
                 f"    return reinterpret_cast<{wrapper_type}*>(input);\n",
                 "}\n\n"
             ]
+
         add_force_cast(filament_name, wrapper_name, impls_in, impls_out)
         add_force_cast("const " + filament_name, "const " + wrapper_name, impls_in, impls_out)
 
@@ -491,20 +289,25 @@ inline const {filament_name}* convertIn{name_suffix}(const {wrapper_name}* input
         impls_out.append(f"inline {wrapper_name} convertOut({filament_name} input) {{\n")
         impls_out.append(f"    {wrapper_name} result;\n")
 
+        type_converter = self.type_converter
+
         for field in value_type.fields:
+            # TODO: use static_assert(offsetof(Struct, field) == offsetof(WrapperStruct, field))
+            # to fully ensure a simple memcpy will not garble the entire struct
+
             # Arrays need to be considered
             if isinstance(field.type, ApiConstantArray):
                 for i in range(0, field.type.element_count):
-                    expression = self._convert_out(f"input.{field.name}[{i}]", field.type.element_type)
+                    expression = type_converter.convert_out(f"input.{field.name}[{i}]", field.type.element_type)
                     impls_out.append(f"    result.{field.name}[{i}] = {expression};\n")
 
-                    expression = self._convert_in(f"input.{field.name}[{i}]", field.type.element_type)
+                    expression = type_converter.convert_in(f"input.{field.name}[{i}]", field.type.element_type)
                     impls_in.append(f"    result.{field.name}[{i}] = {expression};\n")
             else:
-                expression = self._convert_out("input." + field.name, field.type)
+                expression = type_converter.convert_out("input." + field.name, field.type)
                 impls_out.append(f"    result.{field.name} = {expression};\n")
 
-                expression = self._convert_in("input." + field.name, field.type)
+                expression = type_converter.convert_in("input." + field.name, field.type)
                 impls_in.append(f"    result.{field.name} = {expression};\n")
 
         impls_in.append("    return result;\n")
@@ -524,18 +327,20 @@ inline const {filament_name}* convertIn{name_suffix}(const {wrapper_name}* input
             fh.writelines(conversion_decls)
             fh.writelines(conversion_impls)
 
-        (method_decls, method_impls) = self._generate_methods()
-        self._generate_header(output_dir, method_decls)
+        self._create_delegates()
+
+        self._generate_header(output_dir)
         with output_dir.joinpath("cfilament.cpp").open("wt", buffering=4096) as fh:
             fh.write("""extern "C" {\n""")
             fh.write("#include \"cfilament.h\"\n")
             fh.write("""};\n\n""")
             fh.write("#include \"conversions.h\"\n")
 
-            fh.writelines(method_impls)
+            # Add includes for all C++ classes at the top
+            fh.writelines([f"#include <{c.header}>\n" for c in self.model.classes])
+            fh.write("\n")
 
-    def _get_entity_instance_type_name(self, owner: str):
-        return _mangle_name(owner) + "_Instance"
+            fh.write(self.delegate_factory.implementations.getvalue())
 
     def _collect_all_entity_instances(self) -> Set[str]:
         """
@@ -553,106 +358,6 @@ inline const {filament_name}* convertIn{name_suffix}(const {wrapper_name}* input
 
         return result
 
-    def _get_type_repr(self, type_ref: Optional[ApiTypeRef], api_surface: bool = True) -> str:
-        """
-        :param type_ref:
-        :param api_surface: Get the type used on the external C API surface or one used on the filament API.
-        :return:
-        """
-
-        if type_ref is None:
-            return "void"
-
-        if isinstance(type_ref, ApiPassByRef):
-            # Detect opaque handle and use the typedef name (which already is a pointer)
-            if isinstance(type_ref.pointee, ApiClassRef):
-                return _mangle_name(type_ref.pointee.qualified_name)
-
-            result = ""
-            if type_ref.const:
-                result = "const "
-            result += self._get_type_repr(type_ref.pointee)
-            if api_surface or type_ref.ref_type == ApiPassByRefType.POINTER:
-                result += "*"
-            else:
-                result += "&"
-            return result
-
-        elif isinstance(type_ref, ApiPrimitiveType):
-            if type_ref.kind == PrimitiveTypeKind.UNEXPOSED:
-                return "void*"
-
-            if api_surface:
-                return _primitive_type_names[type_ref.kind]
-            else:
-                return _primitive_type_names_filament[type_ref.kind]
-
-        elif isinstance(type_ref, ApiClassRef) or isinstance(type_ref, ApiEnumRef) \
-                or isinstance(type_ref, ApiValueTypeRef):
-            if api_surface:
-                return _mangle_name(type_ref.qualified_name)
-            else:
-                return type_ref.qualified_name
-
-        elif isinstance(type_ref, ApiCallbackRef):
-            if api_surface:
-                return _mangle_name(type_ref.qualified_name)
-            else:
-                return type_ref.qualified_name
-
-        elif isinstance(type_ref, ApiBitsetType):
-            if type_ref.element_type == PrimitiveTypeKind.UINT32 and type_ref.element_count == 1:
-                if api_surface:
-                    return "uint32_t"  # Use uint32_t in lieu of bitset directlies
-                else:
-                    return "utils::bitset32"
-            else:
-                raise RuntimeError("Currently no support for extended bitsets")
-
-        elif isinstance(type_ref, ApiEntityInstance):
-            if api_surface:
-                return self._get_entity_instance_type_name(type_ref.owner_qualified_name)
-            else:
-                return "utils::EntityInstance<" + type_ref.owner_qualified_name + ">"
-
-        elif isinstance(type_ref, ApiStringType):
-            return "const char*"
-
-        raise RuntimeError("Don't know how to represent type: " + type_ref.to_dict().__repr__())
-
-    def _create_method_header(self, parent_class: Union[ApiClass, ApiInterface],
-                              method: ApiMethod,
-                              method_parameters: List[ApiParameterModel]):
-        method_name = self._get_exported_method_name(parent_class, method)
-
-        result = ""
-
-        # Handle the special case where a method needs to be reformed because the return type
-        # is non-trivial
-        trailing_return_value = _needs_return_value_transform(method.return_type)
-        if trailing_return_value:
-            result += "void"
-            method_parameters.append(ApiParameterModel(
-                "result",
-                ApiPassByRef(False, ApiPassByRefType.POINTER, method.return_type)
-            ))
-        else:
-            result += self._get_type_repr(method.return_type)
-        result += f" {method_name}("
-
-        # Write method parameters
-        for i in range(0, len(method_parameters)):
-            param = method_parameters[i]
-            if i > 0:
-                result += ", "
-            result += self._get_type_repr(param.type)
-            result += " "
-            result += param.name
-
-        result += ")"
-
-        return result, trailing_return_value
-
     def _get_function_pointer_decl(self,
                                    name: str,
                                    return_type: Optional[ApiTypeRef],
@@ -662,7 +367,7 @@ inline const {filament_name}* convertIn{name_suffix}(const {wrapper_name}* input
 
         # Handle the special case where a method needs to be reformed because the return type
         # is non-trivial
-        trailing_return_value = _needs_return_value_transform(return_type)
+        trailing_return_value = not self.type_converter.can_be_returned(return_type)
         if trailing_return_value:
             result = "void"
             method_parameters.append(ApiParameterModel(
@@ -670,7 +375,7 @@ inline const {filament_name}* convertIn{name_suffix}(const {wrapper_name}* input
                 ApiPassByRef(False, ApiPassByRefType.POINTER, return_type)
             ))
         else:
-            result += self._get_type_repr(return_type)
+            result += self.type_converter.get_wrapper_type(return_type)
         result += f"(*{name})("
 
         # Write method parameters
@@ -678,7 +383,7 @@ inline const {filament_name}* convertIn{name_suffix}(const {wrapper_name}* input
             param = method_parameters[i]
             if i > 0:
                 result += ", "
-            result += self._get_type_repr(param.type)
+            result += self.type_converter.get_wrapper_type(param.type)
             result += " "
             result += param.name
 

@@ -190,6 +190,22 @@ class ApiValueTypeRef(ApiTypeRef):
         }
 
 
+class ApiOpaqueRef(ApiTypeRef):
+    """
+    Hides a pointer to a class that is not exposed publicly.
+    """
+
+    def __init__(self, qualified_name: str):
+        super().__init__()
+        self.qualified_name = qualified_name
+
+    def to_dict(self) -> dict:
+        return {
+            "type": "opaque_ref",
+            "qualified_name": self.qualified_name
+        }
+
+
 class ApiConstantArray(ApiTypeRef):
     """
     A constant-sized array. Only used for fields or pointee.
