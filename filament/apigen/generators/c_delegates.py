@@ -98,7 +98,7 @@ class DelegateFactory:
 
         impl_lines = [
             method_signature,
-            "{"
+            "{",
             f"    {call_expression};",
             "}",
             ""
